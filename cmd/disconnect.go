@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
 
 	"github.com/lolrazh/cloak/internal/config"
 	"github.com/lolrazh/cloak/internal/killswitch"
@@ -30,13 +32,13 @@ var disconnectCmd = &cobra.Command{
 			return nil
 		}
 
-		// Disable kill switch first (so the tunnel teardown traffic isn't blocked).
+		// Always attempt to disable kill switch first, regardless of IsEnabled result.
+		// The IsEnabled check can fail (e.g. sudo prompt issues), and leaving
+		// blocking firewall rules active is far worse than a redundant disable call.
 		ks := killswitch.New()
-		if enabled, _ := ks.IsEnabled(); enabled {
-			fmt.Println("Disabling kill switch...")
-			if err := ks.Disable(); err != nil {
-				fmt.Printf("Warning: kill switch disable failed: %v\n", err)
-			}
+		fmt.Println("Disabling kill switch...")
+		if err := ks.Disable(); err != nil {
+			fmt.Printf("Warning: kill switch disable failed: %v\n", err)
 		}
 
 		fmt.Println("Disconnecting...")
@@ -44,9 +46,23 @@ var disconnectCmd = &cobra.Command{
 			return fmt.Errorf("bringing tunnel down: %w", err)
 		}
 
+		// Safety net: restore DNS in case wg-quick down didn't fully clean up.
+		restoreDNS()
+
 		fmt.Println("Disconnected.")
 		return nil
 	},
+}
+
+// restoreDNS resets DNS to DHCP defaults as a safety net after disconnect.
+func restoreDNS() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	// Reset DNS on common macOS interfaces to use DHCP-provided DNS.
+	for _, iface := range []string{"Wi-Fi", "Ethernet"} {
+		exec.Command("networksetup", "-setdnsservers", iface, "Empty").CombinedOutput()
+	}
 }
 
 func init() {

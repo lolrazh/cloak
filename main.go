@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/lolrazh/cloak/cmd"
@@ -51,6 +53,13 @@ func cleanup() {
 	confPath := findWGConf()
 	if confPath != "" {
 		mgr.Down(confPath)
+	}
+
+	// Safety net: restore DNS.
+	if runtime.GOOS == "darwin" {
+		for _, iface := range []string{"Wi-Fi", "Ethernet"} {
+			exec.Command("networksetup", "-setdnsservers", iface, "Empty").CombinedOutput()
+		}
 	}
 }
 
