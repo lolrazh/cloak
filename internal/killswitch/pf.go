@@ -112,7 +112,7 @@ func (ks *PFKillSwitch) Disable() error {
 func (ks *PFKillSwitch) IsEnabled() (bool, error) {
 	out, err := exec.Command("sudo", "pfctl", "-sr").CombinedOutput()
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("checking pf kill switch state: %w\n%s", err, out)
 	}
 	return strings.Contains(string(out), "Cloak VPN Kill Switch") ||
 		strings.Contains(string(out), "block drop all"), nil

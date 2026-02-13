@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -114,6 +115,8 @@ func (m Model) View() string {
 	var statusLine string
 	if m.info.PermErr != "" {
 		statusLine = labelStyle.Render("Status:") + warnDot + " " + warnStyle.Render("Unknown ("+m.info.PermErr+")")
+	} else if m.info.StatusErr != "" {
+		statusLine = labelStyle.Render("Status:") + warnDot + " " + warnStyle.Render("Unknown ("+m.info.StatusErr+")")
 	} else if m.info.Connected {
 		statusLine = labelStyle.Render("Status:") + connectedDot + " " + valueStyle.Render("Connected")
 	} else {
@@ -190,11 +193,22 @@ func pollStatus(cfg *config.Config) tea.Cmd {
 		enabled, err := ks.IsEnabled()
 		info.KillSwitch = enabled
 		if err != nil {
-			info.KillSwitchErr = err.Error()
+			info.KillSwitchErr = compactErr(err)
 		}
 
 		return statusMsg(info)
 	}
+}
+
+func compactErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	first := strings.TrimSpace(strings.SplitN(err.Error(), "\n", 2)[0])
+	if first == "" {
+		return "unknown error"
+	}
+	return first
 }
 
 // doConnect returns a command that brings the tunnel up.

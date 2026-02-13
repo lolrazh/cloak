@@ -143,7 +143,7 @@ func removeChain(ipt string) {
 func (ks *IPTablesKillSwitch) IsEnabled() (bool, error) {
 	out, err := exec.Command("sudo", "iptables", "-L", chainName).CombinedOutput()
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("checking iptables kill switch state: %w\n%s", err, out)
 	}
 	// Chain exists and has rules — kill switch is active.
 	return strings.Contains(string(out), "DROP"), nil

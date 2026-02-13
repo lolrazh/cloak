@@ -27,10 +27,18 @@ var statusCmd = &cobra.Command{
 
 		// Check kill switch.
 		ks := killswitch.New()
-		info.KillSwitch, _ = ks.IsEnabled()
+		enabled, ksErr := ks.IsEnabled()
+		info.KillSwitch = enabled
+		if ksErr != nil {
+			info.KillSwitchErr = ksErr.Error()
+		}
 
 		// Display.
-		if info.Connected {
+		if info.PermErr != "" {
+			fmt.Printf("Status:      Unknown (%s)\n", info.PermErr)
+		} else if info.StatusErr != "" {
+			fmt.Printf("Status:      Unknown (%s)\n", info.StatusErr)
+		} else if info.Connected {
 			fmt.Println("Status:      Connected")
 			fmt.Printf("Public IP:   %s\n", info.ExternalIP)
 			if info.Latency > 0 {
@@ -46,7 +54,9 @@ var statusCmd = &cobra.Command{
 			fmt.Println("Status:      Disconnected")
 		}
 
-		if info.KillSwitch {
+		if info.KillSwitchErr != "" {
+			fmt.Printf("Kill Switch: Error (%s)\n", info.KillSwitchErr)
+		} else if info.KillSwitch {
 			fmt.Println("Kill Switch: Active")
 		} else {
 			fmt.Println("Kill Switch: Inactive")

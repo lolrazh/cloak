@@ -1,6 +1,7 @@
 package status
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -99,4 +100,55 @@ func abs(x int64) int64 {
 		return -x
 	}
 	return x
+}
+
+func TestClassifyWGShowError(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		out        string
+		timedOut   bool
+		wantPerm   bool
+		wantStatus bool
+	}{
+		{
+			name:       "permission required",
+			err:        fmt.Errorf("exit status 1"),
+			out:        "sudo: a password is required",
+			wantPerm:   true,
+			wantStatus: false,
+		},
+		{
+			name:       "timeout",
+			err:        fmt.Errorf("signal: killed"),
+			timedOut:   true,
+			wantPerm:   false,
+			wantStatus: true,
+		},
+		{
+			name:       "generic wg failure",
+			err:        fmt.Errorf("exit status 1"),
+			out:        "wg: command not found",
+			wantPerm:   false,
+			wantStatus: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			permErr, statusErr := classifyWGShowError(tt.err, tt.out, tt.timedOut)
+			if tt.wantPerm && permErr == "" {
+				t.Fatalf("expected permission error, got empty")
+			}
+			if !tt.wantPerm && permErr != "" {
+				t.Fatalf("expected no permission error, got %q", permErr)
+			}
+			if tt.wantStatus && statusErr == "" {
+				t.Fatalf("expected status error, got empty")
+			}
+			if !tt.wantStatus && statusErr != "" {
+				t.Fatalf("expected no status error, got %q", statusErr)
+			}
+		})
+	}
 }

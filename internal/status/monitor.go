@@ -27,6 +27,7 @@ type Info struct {
 	KillSwitch    bool
 	KillSwitchErr string // Non-empty if kill switch check failed.
 	PermErr       string // Non-empty if sudo/permission check failed.
+	StatusErr     string // Non-empty if status check failed for other reasons.
 }
 
 // Gather collects current VPN status information.
@@ -38,15 +39,10 @@ func Gather(serverIP string) Info {
 	// Use a 3-second timeout so dashboard polling doesn't hang on sudo prompts.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	wgOut, err := exec.CommandContext(ctx, "sudo", "wg", "show").CombinedOutput()
+	wgOut, err := exec.CommandContext(ctx, "sudo", "-n", "wg", "show").CombinedOutput()
 	if err != nil {
 		outStr := strings.TrimSpace(string(wgOut))
-		if ctx.Err() != nil {
-			info.PermErr = "sudo timed out (password required?)"
-		} else if strings.Contains(outStr, "password") || strings.Contains(outStr, "Permission denied") || strings.Contains(outStr, "a]password") {
-			info.PermErr = "sudo auth required — run with sudo or cache credentials"
-		}
-		// Empty output with no error context means no interfaces (disconnected).
+		info.PermErr, info.StatusErr = classifyWGShowError(err, outStr, ctx.Err() != nil)
 		info.Connected = false
 		return info
 	}
@@ -67,6 +63,49 @@ func Gather(serverIP string) Info {
 	}
 
 	return info
+}
+
+func classifyWGShowError(err error, out string, timedOut bool) (permErr, statusErr string) {
+	if timedOut {
+		return "", "status check timed out"
+	}
+
+	lowerOut := strings.ToLower(out)
+	lowerErr := strings.ToLower(err.Error())
+	if isPermissionError(lowerOut) || isPermissionError(lowerErr) {
+		return "sudo auth required — run `sudo -v` first", ""
+	}
+
+	msg := out
+	if msg == "" {
+		msg = err.Error()
+	}
+	first := strings.TrimSpace(strings.SplitN(msg, "\n", 2)[0])
+	if first == "" {
+		first = "unknown status error"
+	}
+	return "", first
+}
+
+func isPermissionError(s string) bool {
+	markers := []string{
+		"a password is required",
+		"password is required",
+		"terminal is required to read the password",
+		"no tty present and no askpass program specified",
+		"permission denied",
+		"not in the sudoers file",
+		"sorry, try again",
+		"authentication failure",
+		"must be run as root",
+		"operation not permitted",
+	}
+	for _, marker := range markers {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseWGShow extracts handshake and transfer info from `wg show` output.
