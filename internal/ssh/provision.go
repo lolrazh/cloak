@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/lolrazh/cloak/internal/config"
@@ -27,6 +28,12 @@ type ProvisionResult struct {
 //  8. Enable and start WireGuard
 //  9. Return client config
 func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
+	// Derive server/client addresses from configured subnet.
+	serverAddr, clientAddr, err := subnetAddresses(cfg.Subnet)
+	if err != nil {
+		return nil, fmt.Errorf("invalid subnet %q: %w", cfg.Subnet, err)
+	}
+
 	steps := []struct {
 		name string
 		fn   func() error
@@ -143,12 +150,12 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 		name: "Uploading server config",
 		fn: func() error {
 			serverConf, err := wgconfig.RenderServer(wgconfig.ServerData{
-				ServerAddress:    "10.0.0.1/24",
+				ServerAddress:    serverAddr + "/24",
 				Port:             cfg.Port,
 				ServerPrivateKey: serverKP.Private.String(),
 				DefaultInterface: defaultIface,
 				ClientPublicKey:  cfg.PublicKey,
-				ClientAddress:    "10.0.0.2",
+				ClientAddress:    clientAddr,
 			})
 			if err != nil {
 				return fmt.Errorf("rendering server config: %w", err)
@@ -218,7 +225,7 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 
 	// 9. Generate client config.
 	clientConf, err := wgconfig.RenderClient(wgconfig.ClientData{
-		ClientAddress:    "10.0.0.2",
+		ClientAddress:    clientAddr,
 		ClientPrivateKey: cfg.PrivateKey,
 		ServerPublicKey:  serverKP.Public.String(),
 		ServerEndpoint:   cfg.Server.Host,
@@ -232,4 +239,22 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 		ServerPublicKey: serverKP.Public.String(),
 		ClientConfig:    clientConf,
 	}, nil
+}
+
+// subnetAddresses derives server (.1) and client (.2) addresses from a CIDR subnet.
+// e.g. "10.0.0.0/24" → ("10.0.0.1", "10.0.0.2", nil)
+func subnetAddresses(subnet string) (server, client string, err error) {
+	ip, _, err := net.ParseCIDR(subnet)
+	if err != nil {
+		return "", "", fmt.Errorf("parsing subnet: %w", err)
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return "", "", fmt.Errorf("only IPv4 subnets supported, got %s", subnet)
+	}
+	ip4[3] = 1
+	server = net.IP(ip4).String()
+	ip4[3] = 2
+	client = net.IP(ip4).String()
+	return server, client, nil
 }

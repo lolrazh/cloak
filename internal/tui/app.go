@@ -204,7 +204,9 @@ func doConnect(cfg *config.Config) tea.Cmd {
 		// Enable kill switch.
 		if cfg.Server != nil {
 			ks := killswitch.New()
-			ks.Enable(cfg.Server.Host, cfg.Port)
+			if err := ks.Enable(cfg.Server.Host, cfg.Port); err != nil {
+				return actionDoneMsg{err: fmt.Errorf("connected but kill switch failed: %w", err)}
+			}
 		}
 
 		return actionDoneMsg{}
@@ -215,7 +217,9 @@ func doConnect(cfg *config.Config) tea.Cmd {
 func doDisconnect(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		ks := killswitch.New()
-		ks.Disable()
+		if err := ks.Disable(); err != nil {
+			return actionDoneMsg{err: fmt.Errorf("kill switch disable failed: %w", err)}
+		}
 
 		confPath, err := config.WGConfPath()
 		if err != nil {

@@ -5,6 +5,7 @@
 package status
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -32,7 +33,10 @@ func Gather(serverIP string) Info {
 	info := Info{}
 
 	// Check if tunnel is up by looking at wg show output.
-	wgOut, err := exec.Command("sudo", "wg", "show").CombinedOutput()
+	// Use a 3-second timeout so dashboard polling doesn't hang on sudo prompts.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	wgOut, err := exec.CommandContext(ctx, "sudo", "wg", "show").CombinedOutput()
 	if err != nil || len(strings.TrimSpace(string(wgOut))) == 0 {
 		info.Connected = false
 		return info

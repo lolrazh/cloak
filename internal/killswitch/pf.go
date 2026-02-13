@@ -39,6 +39,8 @@ func (ks *PFKillSwitch) Enable(serverIP string, serverPort int) error {
 	// Build kill switch rules.
 	// Allow: loopback, VPN server endpoint, WireGuard interface, block everything else.
 	rules := fmt.Sprintf(`# Cloak VPN Kill Switch
+# Block all IPv6 (prevents IPv6 leak outside tunnel)
+block drop quick inet6 all
 # Allow loopback
 pass quick on lo0 all
 # Allow traffic to VPN server (needed to maintain tunnel)

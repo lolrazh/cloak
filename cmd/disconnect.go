@@ -16,6 +16,17 @@ var disconnectCmd = &cobra.Command{
 	Aliases: []string{"off"},
 	Short:   "Disconnect from the VPN",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Always attempt kill switch disable first, even if tunnel appears down.
+		// The tunnel can drop unexpectedly while kill switch rules remain active,
+		// leaving the user with no internet. A redundant disable is harmless.
+		ks := killswitch.New()
+		if enabled, _ := ks.IsEnabled(); enabled {
+			fmt.Println("Disabling kill switch...")
+			if err := ks.Disable(); err != nil {
+				fmt.Printf("Warning: kill switch disable failed: %v\n", err)
+			}
+		}
+
 		confPath, err := config.WGConfPath()
 		if err != nil {
 			return fmt.Errorf("WG config path: %w", err)
@@ -28,17 +39,9 @@ var disconnectCmd = &cobra.Command{
 			return fmt.Errorf("checking tunnel status: %w", err)
 		}
 		if !up {
-			fmt.Println("Already disconnected.")
+			restoreDNS()
+			fmt.Println("Disconnected.")
 			return nil
-		}
-
-		// Always attempt to disable kill switch first, regardless of IsEnabled result.
-		// The IsEnabled check can fail (e.g. sudo prompt issues), and leaving
-		// blocking firewall rules active is far worse than a redundant disable call.
-		ks := killswitch.New()
-		fmt.Println("Disabling kill switch...")
-		if err := ks.Disable(); err != nil {
-			fmt.Printf("Warning: kill switch disable failed: %v\n", err)
 		}
 
 		fmt.Println("Disconnecting...")

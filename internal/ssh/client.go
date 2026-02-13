@@ -2,8 +2,12 @@
 package ssh
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,6 +22,8 @@ type Client struct {
 }
 
 // Connect establishes an SSH connection to the given host.
+// Uses Trust On First Use (TOFU) for host key verification:
+// first connection saves the key, subsequent connections verify it.
 func Connect(host, user, keyPath string) (*Client, error) {
 	keyBytes, err := os.ReadFile(keyPath)
 	if err != nil {
@@ -34,8 +40,7 @@ func Connect(host, user, keyPath string) (*Client, error) {
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		// TODO(M8): Store and verify host keys in ~/.config/cloak/known_hosts.
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: tofuHostKeyCallback(host),
 		Timeout:         10 * time.Second,
 	}
 
@@ -96,4 +101,73 @@ func (c *Client) WriteFile(path, content string, mode string) error {
 // Close terminates the SSH connection.
 func (c *Client) Close() error {
 	return c.conn.Close()
+}
+
+// knownHostsPath returns ~/.config/cloak/known_hosts.
+func knownHostsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "cloak", "known_hosts")
+}
+
+// tofuHostKeyCallback implements Trust On First Use:
+// - First connection to a host: save its key fingerprint.
+// - Subsequent connections: verify the fingerprint matches.
+func tofuHostKeyCallback(host string) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		fingerprint := ssh.FingerprintSHA256(key)
+		khPath := knownHostsPath()
+
+		// Load existing known hosts.
+		known := loadKnownHosts(khPath)
+		// Normalize host (strip port if present).
+		bareHost := host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			bareHost = h
+		}
+
+		if saved, ok := known[bareHost]; ok {
+			if saved != fingerprint {
+				return fmt.Errorf(
+					"HOST KEY MISMATCH for %s!\n"+
+						"  Expected: %s\n"+
+						"  Got:      %s\n"+
+						"This could indicate a MITM attack.\n"+
+						"If the server was reprovisioned, remove the old entry from:\n  %s",
+					bareHost, saved, fingerprint, khPath)
+			}
+			return nil // Key matches.
+		}
+
+		// First connection — trust and save.
+		fp := sha256.Sum256(key.Marshal())
+		fmt.Printf("  Trusting new host key for %s: %s (%s)\n",
+			bareHost, fingerprint, base64.StdEncoding.EncodeToString(fp[:]))
+		known[bareHost] = fingerprint
+		saveKnownHosts(khPath, known)
+		return nil
+	}
+}
+
+func loadKnownHosts(path string) map[string]string {
+	known := make(map[string]string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return known
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) == 2 {
+			known[parts[0]] = parts[1]
+		}
+	}
+	return known
+}
+
+func saveKnownHosts(path string, known map[string]string) {
+	var lines []string
+	for host, fp := range known {
+		lines = append(lines, host+" "+fp)
+	}
+	os.MkdirAll(filepath.Dir(path), 0700)
+	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600)
 }
