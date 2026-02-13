@@ -18,14 +18,14 @@ const pollInterval = 2 * time.Second
 
 // Model is the Bubble Tea model for the dashboard.
 type Model struct {
-	info      status.Info
-	cfg       *config.Config
-	spinner   spinner.Model
-	width     int
-	height    int
-	busy      bool   // true while connecting/disconnecting
-	busyMsg   string
-	err       error
+	info    status.Info
+	cfg     *config.Config
+	spinner spinner.Model
+	width   int
+	height  int
+	busy    bool // true while connecting/disconnecting
+	busyMsg string
+	err     error
 }
 
 // tickMsg triggers a status poll.
@@ -205,7 +205,11 @@ func doConnect(cfg *config.Config) tea.Cmd {
 		if cfg.Server != nil {
 			ks := killswitch.New()
 			if err := ks.Enable(cfg.Server.Host, cfg.Port); err != nil {
-				return actionDoneMsg{err: fmt.Errorf("connected but kill switch failed: %w", err)}
+				// Fail closed: if kill switch fails, tear down tunnel to avoid leaks.
+				if downErr := mgr.Down(confPath); downErr != nil {
+					return actionDoneMsg{err: fmt.Errorf("kill switch failed (%v) and rollback failed (%v); tunnel may still be up", err, downErr)}
+				}
+				return actionDoneMsg{err: fmt.Errorf("kill switch failed, tunnel was brought down: %w", err)}
 			}
 		}
 

@@ -23,7 +23,7 @@ type ServerData struct {
 
 // ClientData holds values for the client WireGuard config template.
 type ClientData struct {
-	ClientAddress    string // e.g. "10.0.0.2"
+	ClientAddress    string // e.g. "10.0.0.2/24"
 	ClientPrivateKey string
 	ServerPublicKey  string
 	ServerEndpoint   string // IP or hostname

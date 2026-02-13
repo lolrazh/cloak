@@ -20,11 +20,9 @@ var disconnectCmd = &cobra.Command{
 		// The tunnel can drop unexpectedly while kill switch rules remain active,
 		// leaving the user with no internet. A redundant disable is harmless.
 		ks := killswitch.New()
-		if enabled, _ := ks.IsEnabled(); enabled {
-			fmt.Println("Disabling kill switch...")
-			if err := ks.Disable(); err != nil {
-				fmt.Printf("Warning: kill switch disable failed: %v\n", err)
-			}
+		fmt.Println("Disabling kill switch...")
+		if err := ks.Disable(); err != nil {
+			fmt.Printf("Warning: kill switch disable failed: %v\n", err)
 		}
 
 		confPath, err := config.WGConfPath()

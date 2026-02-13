@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
@@ -29,7 +30,7 @@ type ProvisionResult struct {
 //  9. Return client config
 func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 	// Derive server/client addresses from configured subnet.
-	serverAddr, clientAddr, err := subnetAddresses(cfg.Subnet)
+	serverCIDR, clientCIDR, clientIP, err := subnetDetails(cfg.Subnet)
 	if err != nil {
 		return nil, fmt.Errorf("invalid subnet %q: %w", cfg.Subnet, err)
 	}
@@ -150,12 +151,12 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 		name: "Uploading server config",
 		fn: func() error {
 			serverConf, err := wgconfig.RenderServer(wgconfig.ServerData{
-				ServerAddress:    serverAddr + "/24",
+				ServerAddress:    serverCIDR,
 				Port:             cfg.Port,
 				ServerPrivateKey: serverKP.Private.String(),
 				DefaultInterface: defaultIface,
 				ClientPublicKey:  cfg.PublicKey,
-				ClientAddress:    clientAddr,
+				ClientAddress:    clientIP,
 			})
 			if err != nil {
 				return fmt.Errorf("rendering server config: %w", err)
@@ -225,7 +226,7 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 
 	// 9. Generate client config.
 	clientConf, err := wgconfig.RenderClient(wgconfig.ClientData{
-		ClientAddress:    clientAddr,
+		ClientAddress:    clientCIDR,
 		ClientPrivateKey: cfg.PrivateKey,
 		ServerPublicKey:  serverKP.Public.String(),
 		ServerEndpoint:   cfg.Server.Host,
@@ -241,20 +242,42 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 	}, nil
 }
 
-// subnetAddresses derives server (.1) and client (.2) addresses from a CIDR subnet.
-// e.g. "10.0.0.0/24" → ("10.0.0.1", "10.0.0.2", nil)
-func subnetAddresses(subnet string) (server, client string, err error) {
+// subnetDetails derives server/client addresses from a CIDR subnet.
+// e.g. "10.0.0.0/24" -> ("10.0.0.1/24", "10.0.0.2/24", "10.0.0.2", nil)
+func subnetDetails(subnet string) (serverCIDR, clientCIDR, clientIP string, err error) {
 	ip, _, err := net.ParseCIDR(subnet)
 	if err != nil {
-		return "", "", fmt.Errorf("parsing subnet: %w", err)
+		return "", "", "", fmt.Errorf("parsing subnet: %w", err)
 	}
 	ip4 := ip.To4()
 	if ip4 == nil {
-		return "", "", fmt.Errorf("only IPv4 subnets supported, got %s", subnet)
+		return "", "", "", fmt.Errorf("only IPv4 subnets supported, got %s", subnet)
 	}
-	ip4[3] = 1
-	server = net.IP(ip4).String()
-	ip4[3] = 2
-	client = net.IP(ip4).String()
-	return server, client, nil
+
+	_, ipNet, _ := net.ParseCIDR(subnet)
+	ones, bits := ipNet.Mask.Size()
+	if bits != 32 {
+		return "", "", "", fmt.Errorf("only IPv4 subnets supported, got %s", subnet)
+	}
+	if ones > 30 {
+		return "", "", "", fmt.Errorf("subnet too small, need at least /30")
+	}
+
+	base := binary.BigEndian.Uint32(ip4)
+	server := uint32ToIP(base + 1)
+	client := uint32ToIP(base + 2)
+	if !ipNet.Contains(server) || !ipNet.Contains(client) {
+		return "", "", "", fmt.Errorf("subnet %s does not have enough host addresses", subnet)
+	}
+
+	serverCIDR = fmt.Sprintf("%s/%d", server.String(), ones)
+	clientCIDR = fmt.Sprintf("%s/%d", client.String(), ones)
+	clientIP = client.String()
+	return serverCIDR, clientCIDR, clientIP, nil
+}
+
+func uint32ToIP(v uint32) net.IP {
+	ip := make(net.IP, net.IPv4len)
+	binary.BigEndian.PutUint32(ip, v)
+	return ip
 }

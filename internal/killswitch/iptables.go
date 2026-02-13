@@ -38,8 +38,11 @@ func (ks *IPTablesKillSwitch) Enable(serverIP string, serverPort int) error {
 	}
 
 	// Backup ip6tables too.
-	out6, _ := exec.Command("sudo", "ip6tables-save").CombinedOutput()
-	os.WriteFile(ks.backupPath+".v6", out6, 0600)
+	if out6, err := exec.Command("sudo", "ip6tables-save").CombinedOutput(); err == nil {
+		if err := os.WriteFile(ks.backupPath+".v6", out6, 0600); err != nil {
+			return fmt.Errorf("writing ip6tables backup: %w", err)
+		}
+	}
 
 	// Create a dedicated chain so we don't touch existing rules.
 	cmds := [][]string{
@@ -114,7 +117,11 @@ func (ks *IPTablesKillSwitch) Disable() error {
 	// Restore IPv6.
 	v6Backup := ks.backupPath + ".v6"
 	if _, err := os.Stat(v6Backup); err == nil {
-		exec.Command("sudo", "ip6tables-restore", v6Backup).CombinedOutput()
+		out, err := exec.Command("sudo", "ip6tables-restore", v6Backup).CombinedOutput()
+		if err != nil {
+			removeChain("ip6tables")
+			return fmt.Errorf("restoring ip6tables: %w\n%s", err, out)
+		}
 		os.Remove(v6Backup)
 	} else {
 		removeChain("ip6tables")

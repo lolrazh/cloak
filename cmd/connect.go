@@ -64,7 +64,11 @@ var connectCmd = &cobra.Command{
 			ks := killswitch.New()
 			fmt.Println("Enabling kill switch...")
 			if err := ks.Enable(cfg.Server.Host, cfg.Port); err != nil {
-				fmt.Printf("Warning: kill switch failed: %v\n", err)
+				// Fail closed: if kill switch fails, tear down the tunnel to avoid leaks.
+				if downErr := mgr.Down(confPath); downErr != nil {
+					return fmt.Errorf("kill switch failed (%v) and rollback failed (%v); tunnel may still be up", err, downErr)
+				}
+				return fmt.Errorf("kill switch failed, tunnel was brought down: %w", err)
 			}
 		}
 

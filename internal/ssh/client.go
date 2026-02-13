@@ -143,7 +143,9 @@ func tofuHostKeyCallback(host string) ssh.HostKeyCallback {
 		fmt.Printf("  Trusting new host key for %s: %s (%s)\n",
 			bareHost, fingerprint, base64.StdEncoding.EncodeToString(fp[:]))
 		known[bareHost] = fingerprint
-		saveKnownHosts(khPath, known)
+		if err := saveKnownHosts(khPath, known); err != nil {
+			return fmt.Errorf("saving known host key: %w", err)
+		}
 		return nil
 	}
 }
@@ -163,11 +165,16 @@ func loadKnownHosts(path string) map[string]string {
 	return known
 }
 
-func saveKnownHosts(path string, known map[string]string) {
+func saveKnownHosts(path string, known map[string]string) error {
 	var lines []string
 	for host, fp := range known {
 		lines = append(lines, host+" "+fp)
 	}
-	os.MkdirAll(filepath.Dir(path), 0700)
-	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		return err
+	}
+	return nil
 }

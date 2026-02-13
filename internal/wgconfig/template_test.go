@@ -38,7 +38,7 @@ func TestRenderServer(t *testing.T) {
 
 func TestRenderClient(t *testing.T) {
 	data := ClientData{
-		ClientAddress:    "10.0.0.2",
+		ClientAddress:    "10.0.0.2/24",
 		ClientPrivateKey: "CLIENT_PRIVATE_KEY",
 		ServerPublicKey:  "SERVER_PUBLIC_KEY",
 		ServerEndpoint:   "203.0.113.42",

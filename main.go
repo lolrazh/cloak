@@ -35,24 +35,22 @@ func main() {
 
 // cleanup attempts a graceful disconnect on signal.
 func cleanup() {
-	mgr := tunnel.NewManager()
-	up, _ := mgr.IsUp()
-	if !up {
-		return
-	}
-
-	fmt.Fprintln(os.Stderr, "\nCaught signal, cleaning up...")
-
 	// Disable kill switch first.
 	ks := killswitch.New()
-	if enabled, _ := ks.IsEnabled(); enabled {
-		ks.Disable()
+	if err := ks.Disable(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: kill switch disable failed during cleanup: %v\n", err)
 	}
 
-	// Bring tunnel down.
-	confPath := findWGConf()
-	if confPath != "" {
-		mgr.Down(confPath)
+	mgr := tunnel.NewManager()
+	up, _ := mgr.IsUp()
+	if up {
+		fmt.Fprintln(os.Stderr, "\nCaught signal, cleaning up...")
+
+		// Bring tunnel down.
+		confPath := findWGConf()
+		if confPath != "" {
+			mgr.Down(confPath)
+		}
 	}
 
 	// Safety net: restore DNS.

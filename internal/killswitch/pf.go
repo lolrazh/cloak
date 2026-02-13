@@ -12,8 +12,8 @@ import (
 
 // PFKillSwitch implements KillSwitch using macOS's pf (Packet Filter).
 type PFKillSwitch struct {
-	backupPath    string // Path to backed-up pf rules.
-	rulesPath     string // Path to cloak's pf anchor rules.
+	backupPath       string // Path to backed-up pf rules.
+	rulesPath        string // Path to cloak's pf anchor rules.
 	pfWasEnabledPath string // Marker file: pf was already enabled before us.
 }
 
@@ -75,6 +75,14 @@ block drop all
 }
 
 func (ks *PFKillSwitch) Disable() error {
+	// If Cloak state files are missing, assume kill switch was not enabled by us.
+	// This avoids modifying unrelated pf setups.
+	_, rulesErr := os.Stat(ks.rulesPath)
+	_, markerErr := os.Stat(ks.pfWasEnabledPath)
+	if rulesErr != nil && markerErr != nil {
+		return nil
+	}
+
 	// Restore macOS default pf rules from /etc/pf.conf.
 	// This is the system-managed config with proper anchor definitions —
 	// much safer than trying to replay captured pfctl -sr output.
