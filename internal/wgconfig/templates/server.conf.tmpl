@@ -1,0 +1,11 @@
+[Interface]
+Address = {{ .ServerAddress }}
+ListenPort = {{ .Port }}
+PrivateKey = {{ .ServerPrivateKey }}
+
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o {{ .DefaultInterface }} -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o {{ .DefaultInterface }} -j MASQUERADE
+
+[Peer]
+PublicKey = {{ .ClientPublicKey }}
+AllowedIPs = {{ .ClientAddress }}/32
