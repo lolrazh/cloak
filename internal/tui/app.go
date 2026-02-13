@@ -219,6 +219,12 @@ func doConnect(cfg *config.Config) tea.Cmd {
 			return actionDoneMsg{err: err}
 		}
 		mgr := tunnel.NewManager()
+
+		// Check if already connected to avoid "already exists" errors from wg-quick.
+		if up, _ := mgr.IsUp(); up {
+			return actionDoneMsg{}
+		}
+
 		if err := mgr.Up(confPath); err != nil {
 			return actionDoneMsg{err: err}
 		}
