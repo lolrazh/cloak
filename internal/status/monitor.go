@@ -18,13 +18,15 @@ import (
 
 // Info holds a snapshot of VPN connection status.
 type Info struct {
-	Connected    bool
-	ExternalIP   string
-	Latency      time.Duration
+	Connected     bool
+	ExternalIP    string
+	Latency       time.Duration
 	LastHandshake time.Duration // Time since last handshake.
-	TxBytes      int64
-	RxBytes      int64
-	KillSwitch   bool
+	TxBytes       int64
+	RxBytes       int64
+	KillSwitch    bool
+	KillSwitchErr string // Non-empty if kill switch check failed.
+	PermErr       string // Non-empty if sudo/permission check failed.
 }
 
 // Gather collects current VPN status information.
@@ -37,7 +39,18 @@ func Gather(serverIP string) Info {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	wgOut, err := exec.CommandContext(ctx, "sudo", "wg", "show").CombinedOutput()
-	if err != nil || len(strings.TrimSpace(string(wgOut))) == 0 {
+	if err != nil {
+		outStr := strings.TrimSpace(string(wgOut))
+		if ctx.Err() != nil {
+			info.PermErr = "sudo timed out (password required?)"
+		} else if strings.Contains(outStr, "password") || strings.Contains(outStr, "Permission denied") || strings.Contains(outStr, "a]password") {
+			info.PermErr = "sudo auth required — run with sudo or cache credentials"
+		}
+		// Empty output with no error context means no interfaces (disconnected).
+		info.Connected = false
+		return info
+	}
+	if len(strings.TrimSpace(string(wgOut))) == 0 {
 		info.Connected = false
 		return info
 	}

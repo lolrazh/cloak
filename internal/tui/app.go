@@ -112,7 +112,9 @@ func (m Model) View() string {
 
 	// Status line.
 	var statusLine string
-	if m.info.Connected {
+	if m.info.PermErr != "" {
+		statusLine = labelStyle.Render("Status:") + warnDot + " " + warnStyle.Render("Unknown ("+m.info.PermErr+")")
+	} else if m.info.Connected {
 		statusLine = labelStyle.Render("Status:") + connectedDot + " " + valueStyle.Render("Connected")
 	} else {
 		statusLine = labelStyle.Render("Status:") + disconnectedDot + " " + valueStyle.Render("Disconnected")
@@ -137,7 +139,9 @@ func (m Model) View() string {
 
 	// Kill switch.
 	var ksLine string
-	if m.info.KillSwitch {
+	if m.info.KillSwitchErr != "" {
+		ksLine = labelStyle.Render("Kill Switch:") + warnStyle.Render("● Error ("+m.info.KillSwitchErr+")")
+	} else if m.info.KillSwitch {
 		ksLine = labelStyle.Render("Kill Switch:") + activeStyle.Render("● Active")
 	} else {
 		ksLine = labelStyle.Render("Kill Switch:") + inactiveStyle.Render("● Inactive")
@@ -183,7 +187,11 @@ func pollStatus(cfg *config.Config) tea.Cmd {
 		info := status.Gather(serverIP)
 
 		ks := killswitch.New()
-		info.KillSwitch, _ = ks.IsEnabled()
+		enabled, err := ks.IsEnabled()
+		info.KillSwitch = enabled
+		if err != nil {
+			info.KillSwitchErr = err.Error()
+		}
 
 		return statusMsg(info)
 	}
@@ -220,9 +228,10 @@ func doConnect(cfg *config.Config) tea.Cmd {
 // doDisconnect returns a command that tears down the tunnel.
 func doDisconnect(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
+		var ksErr error
 		ks := killswitch.New()
 		if err := ks.Disable(); err != nil {
-			return actionDoneMsg{err: fmt.Errorf("kill switch disable failed: %w", err)}
+			ksErr = err
 		}
 
 		confPath, err := config.WGConfPath()
@@ -232,6 +241,11 @@ func doDisconnect(cfg *config.Config) tea.Cmd {
 		mgr := tunnel.NewManager()
 		if err := mgr.Down(confPath); err != nil {
 			return actionDoneMsg{err: err}
+		}
+
+		// Report kill switch error after tunnel is down — teardown still happened.
+		if ksErr != nil {
+			return actionDoneMsg{err: fmt.Errorf("disconnected but kill switch disable failed: %w", ksErr)}
 		}
 		return actionDoneMsg{}
 	}

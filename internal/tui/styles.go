@@ -8,8 +8,9 @@ var (
 			Foreground(lipgloss.Color("#7C3AED")).
 			Align(lipgloss.Center)
 
-	connectedDot   = lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E")).Render("●")
+	connectedDot    = lipgloss.NewStyle().Foreground(lipgloss.Color("#22C55E")).Render("●")
 	disconnectedDot = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render("●")
+	warnDot         = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render("●")
 
 	labelStyle = lipgloss.NewStyle().
 			Width(14).
@@ -23,6 +24,9 @@ var (
 
 	inactiveStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#EF4444"))
+
+	warnStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F59E0B"))
 
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#71717A")).
