@@ -31,15 +31,15 @@ type Info struct {
 }
 
 // Gather collects current VPN status information.
-// serverIP is used for latency measurement.
-func Gather(serverIP string) Info {
+// serverIP and serverPublicKey identify the expected Cloak peer.
+func Gather(serverIP, serverPublicKey string) Info {
 	info := Info{}
 
-	// Check if tunnel is up by looking at wg show output.
+	// Check if the configured Cloak peer is present in wg dump output.
 	// Use a 3-second timeout so dashboard polling doesn't hang on sudo prompts.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	wgOut, err := exec.CommandContext(ctx, "sudo", "-n", "wg", "show").CombinedOutput()
+	wgOut, err := exec.CommandContext(ctx, "sudo", "-n", "wg", "show", "all", "dump").CombinedOutput()
 	if err != nil {
 		outStr := strings.TrimSpace(string(wgOut))
 		info.PermErr, info.StatusErr = classifyWGShowError(err, outStr, ctx.Err() != nil)
@@ -51,8 +51,21 @@ func Gather(serverIP string) Info {
 		return info
 	}
 
+	stats, ok := findMatchingPeerStats(string(wgOut), serverIP, serverPublicKey)
+	if !ok {
+		info.Connected = false
+		return info
+	}
+
 	info.Connected = true
-	parseWGShow(string(wgOut), &info)
+	info.RxBytes = stats.rxBytes
+	info.TxBytes = stats.txBytes
+	if stats.latestHandshakeUnix > 0 {
+		hs := time.Unix(stats.latestHandshakeUnix, 0)
+		if now := time.Now(); now.After(hs) {
+			info.LastHandshake = now.Sub(hs)
+		}
+	}
 
 	// Get external IP.
 	info.ExternalIP = fetchExternalIP()
@@ -63,6 +76,83 @@ func Gather(serverIP string) Info {
 	}
 
 	return info
+}
+
+type peerStats struct {
+	latestHandshakeUnix int64
+	rxBytes             int64
+	txBytes             int64
+}
+
+func findMatchingPeerStats(dump, serverIP, serverPublicKey string) (peerStats, bool) {
+	var currentInterface string
+	for _, rawLine := range strings.Split(dump, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Split(line, "\t")
+		if len(fields) == 5 {
+			// Interface line:
+			// interface-name, private-key, public-key, listen-port, fwmark
+			currentInterface = strings.TrimSpace(fields[0])
+			continue
+		}
+		if len(fields) < 8 || currentInterface == "" {
+			continue
+		}
+
+		// Peer line:
+		// public-key, preshared-key, endpoint, allowed-ips,
+		// latest-handshake, transfer-rx, transfer-tx, persistent-keepalive
+		peerPublicKey := strings.TrimSpace(fields[0])
+		endpoint := strings.TrimSpace(fields[2])
+		if !matchesPeer(peerPublicKey, endpoint, serverIP, serverPublicKey) {
+			continue
+		}
+
+		latestHandshake, _ := strconv.ParseInt(strings.TrimSpace(fields[4]), 10, 64)
+		rxBytes, _ := strconv.ParseInt(strings.TrimSpace(fields[5]), 10, 64)
+		txBytes, _ := strconv.ParseInt(strings.TrimSpace(fields[6]), 10, 64)
+
+		return peerStats{
+			latestHandshakeUnix: latestHandshake,
+			rxBytes:             rxBytes,
+			txBytes:             txBytes,
+		}, true
+	}
+	return peerStats{}, false
+}
+
+func matchesPeer(peerPublicKey, endpoint, serverIP, serverPublicKey string) bool {
+	if serverPublicKey != "" && peerPublicKey == serverPublicKey {
+		return true
+	}
+	if serverIP != "" && endpointMatchesHost(endpoint, serverIP) {
+		return true
+	}
+	return false
+}
+
+func endpointMatchesHost(endpoint, host string) bool {
+	if endpoint == "" || endpoint == "(none)" || host == "" {
+		return false
+	}
+
+	endpointHost := endpoint
+	if h, _, err := net.SplitHostPort(endpoint); err == nil {
+		endpointHost = h
+	} else {
+		// Fallback for endpoints not in host:port form.
+		if i := strings.LastIndex(endpoint, ":"); i > 0 {
+			endpointHost = endpoint[:i]
+		}
+	}
+
+	endpointHost = strings.Trim(endpointHost, "[]")
+	host = strings.Trim(host, "[]")
+	return strings.EqualFold(endpointHost, host)
 }
 
 func classifyWGShowError(err error, out string, timedOut bool) (permErr, statusErr string) {

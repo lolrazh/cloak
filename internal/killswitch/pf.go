@@ -16,6 +16,7 @@ type PFKillSwitch struct {
 	backupPath       string // Path to backed-up pf rules.
 	rulesPath        string // Path to cloak's pf anchor rules.
 	pfWasEnabledPath string // Marker file: pf was already enabled before us.
+	anchorName       string // pf anchor where Cloak rules are loaded.
 }
 
 // New returns a platform-specific KillSwitch.
@@ -26,6 +27,7 @@ func New() KillSwitch {
 		backupPath:       filepath.Join(base, "pf-backup.conf"),
 		rulesPath:        filepath.Join(base, "pf-cloak.conf"),
 		pfWasEnabledPath: filepath.Join(base, "pf-was-enabled"),
+		anchorName:       "com.apple/cloak",
 	}
 }
 
@@ -58,45 +60,29 @@ block drop all
 		return fmt.Errorf("writing pf rules: %w", err)
 	}
 
-	// Enable pf and load our rules.
+	// Enable pf and load rules into a dedicated anchor.
+	// Using com.apple/* keeps Cloak isolated and avoids replacing the global ruleset.
 	if out, err := exec.Command("sudo", "pfctl", "-e").CombinedOutput(); err != nil {
 		// "already enabled" is fine, any other error is a problem.
 		if !strings.Contains(string(out), "already enabled") {
 			return fmt.Errorf("enabling pf: %w\n%s", err, out)
 		}
 	}
-	if out, err := exec.Command("sudo", "pfctl", "-f", ks.rulesPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("loading pf rules: %w\n%s", err, out)
+	if out, err := exec.Command("sudo", "pfctl", "-a", ks.anchorName, "-f", ks.rulesPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("loading pf anchor rules: %w\n%s", err, out)
 	}
 
 	return nil
 }
 
 func (ks *PFKillSwitch) Disable() error {
-	// If Cloak state files are missing, assume kill switch was not enabled by us.
-	// This avoids modifying unrelated pf setups.
-	_, rulesErr := os.Stat(ks.rulesPath)
-	_, markerErr := os.Stat(ks.pfWasEnabledPath)
-	if rulesErr != nil && markerErr != nil {
-		return nil
-	}
-
 	// Use sudo -n (non-interactive) throughout. If credentials expired,
 	// we must fail loudly rather than hang or silently leave pf blocking traffic.
 	var restoreErr error
 
-	// Restore macOS default pf rules from /etc/pf.conf.
-	if _, err := os.Stat("/etc/pf.conf"); err == nil {
-		if out, err := exec.Command("sudo", "-n", "pfctl", "-f", "/etc/pf.conf").CombinedOutput(); err != nil {
-			// If restore fails, try flushing everything as a fallback.
-			if out2, err2 := exec.Command("sudo", "-n", "pfctl", "-F", "all").CombinedOutput(); err2 != nil {
-				restoreErr = fmt.Errorf("pf restore failed (sudo expired? run: sudo pfctl -d && sudo pfctl -f /etc/pf.conf)\nrestore: %s\nflush: %s", strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
-			}
-		}
-	} else {
-		if out, err := exec.Command("sudo", "-n", "pfctl", "-F", "all").CombinedOutput(); err != nil {
-			restoreErr = fmt.Errorf("pf flush failed (sudo expired? run: sudo pfctl -d): %s", strings.TrimSpace(string(out)))
-		}
+	// Remove Cloak rules from our dedicated anchor only.
+	if out, err := exec.Command("sudo", "-n", "pfctl", "-a", ks.anchorName, "-F", "all").CombinedOutput(); err != nil {
+		restoreErr = fmt.Errorf("pf anchor flush failed (sudo expired? run: sudo pfctl -a %s -F all): %s", ks.anchorName, strings.TrimSpace(string(out)))
 	}
 
 	// If pf was NOT enabled before we touched it, disable it again.
@@ -135,7 +121,11 @@ func (ks *PFKillSwitch) IsEnabled() (bool, error) {
 		}
 		return false, fmt.Errorf("checking pf kill switch state file: %w", err)
 	}
-	return true, nil
+	out, err := exec.Command("sudo", "-n", "pfctl", "-a", ks.anchorName, "-s", "rules").CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("checking pf kill switch anchor rules: %w\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 func buildWGInterfaceRules() string {

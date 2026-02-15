@@ -194,10 +194,12 @@ func pollStatus(cfg *config.Config) tea.Cmd {
 		exec.Command("sudo", "-n", "-v").Run()
 
 		var serverIP string
+		var serverPublicKey string
 		if cfg.Server != nil {
 			serverIP = cfg.Server.Host
+			serverPublicKey = cfg.Server.PublicKey
 		}
-		info := status.Gather(serverIP)
+		info := status.Gather(serverIP, serverPublicKey)
 
 		ks := killswitch.New()
 		enabled, err := ks.IsEnabled()

@@ -152,3 +152,43 @@ func TestClassifyWGShowError(t *testing.T) {
 		})
 	}
 }
+
+func TestFindMatchingPeerStatsByPublicKey(t *testing.T) {
+	dump := "" +
+		"utun5\tprivA\tpubA\t0\toff\n" +
+		"peer-1\t(none)\t198.51.100.10:51820\t0.0.0.0/0\t1700000000\t100\t200\t25\n" +
+		"utun7\tprivB\tpubB\t0\toff\n" +
+		"peer-2\t(none)\t203.0.113.42:51820\t0.0.0.0/0\t1700000010\t300\t400\t25\n"
+
+	stats, ok := findMatchingPeerStats(dump, "", "peer-2")
+	if !ok {
+		t.Fatalf("expected peer match by public key")
+	}
+	if stats.latestHandshakeUnix != 1700000010 || stats.rxBytes != 300 || stats.txBytes != 400 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestFindMatchingPeerStatsByEndpoint(t *testing.T) {
+	dump := "" +
+		"wg0\tprivA\tpubA\t0\toff\n" +
+		"peer-1\t(none)\t203.0.113.42:51820\t0.0.0.0/0\t1700000005\t111\t222\t25\n"
+
+	stats, ok := findMatchingPeerStats(dump, "203.0.113.42", "")
+	if !ok {
+		t.Fatalf("expected peer match by endpoint host")
+	}
+	if stats.rxBytes != 111 || stats.txBytes != 222 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestFindMatchingPeerStatsNoMatch(t *testing.T) {
+	dump := "" +
+		"wg0\tprivA\tpubA\t0\toff\n" +
+		"peer-1\t(none)\t192.0.2.10:51820\t0.0.0.0/0\t1700000005\t111\t222\t25\n"
+
+	if _, ok := findMatchingPeerStats(dump, "203.0.113.42", "peer-2"); ok {
+		t.Fatalf("expected no match")
+	}
+}
