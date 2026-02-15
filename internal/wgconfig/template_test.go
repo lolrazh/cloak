@@ -56,7 +56,7 @@ func TestRenderClient(t *testing.T) {
 		"DNS = 1.1.1.1",
 		"PublicKey = SERVER_PUBLIC_KEY",
 		"Endpoint = 203.0.113.42:51820",
-		"AllowedIPs = 0.0.0.0/0, ::/0",
+		"AllowedIPs = 0.0.0.0/0",
 		"PersistentKeepalive = 25",
 	}
 	for _, want := range checks {
