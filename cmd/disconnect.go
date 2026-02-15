@@ -16,6 +16,14 @@ var disconnectCmd = &cobra.Command{
 	Aliases: []string{"off"},
 	Short:   "Disconnect from the VPN",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Ensure sudo credentials are cached for kill switch and tunnel operations.
+		if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
+			fmt.Println("Requesting sudo access...")
+			if err := exec.Command("sudo", "-v").Run(); err != nil {
+				return fmt.Errorf("sudo access required for disconnect: %w", err)
+			}
+		}
+
 		// Always attempt kill switch disable first, even if tunnel appears down.
 		// The tunnel can drop unexpectedly while kill switch rules remain active,
 		// leaving the user with no internet. A redundant disable is harmless.
@@ -31,16 +39,6 @@ var disconnectCmd = &cobra.Command{
 		}
 
 		mgr := tunnel.NewManager()
-
-		up, err := mgr.IsUp()
-		if err != nil {
-			return fmt.Errorf("checking tunnel status: %w", err)
-		}
-		if !up {
-			restoreDNS()
-			fmt.Println("Disconnected.")
-			return nil
-		}
 
 		fmt.Println("Disconnecting...")
 		if err := mgr.Down(confPath); err != nil {

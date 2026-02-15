@@ -21,6 +21,10 @@ func (m *DarwinManager) Up(confPath string) error {
 	// wg-quick on macOS uses wireguard-go userspace + utun interfaces.
 	out, err := exec.Command("sudo", "wg-quick", "up", confPath).CombinedOutput()
 	if err != nil {
+		// Make connect idempotent: if interface already exists, treat as success.
+		if isAlreadyUpOutput(string(out)) {
+			return nil
+		}
 		return fmt.Errorf("wg-quick up: %w\n%s", err, out)
 	}
 	return nil
@@ -29,6 +33,10 @@ func (m *DarwinManager) Up(confPath string) error {
 func (m *DarwinManager) Down(confPath string) error {
 	out, err := exec.Command("sudo", "wg-quick", "down", confPath).CombinedOutput()
 	if err != nil {
+		// Make disconnect idempotent: if interface is already gone, treat as success.
+		if isAlreadyDownOutput(string(out)) {
+			return nil
+		}
 		return fmt.Errorf("wg-quick down: %w\n%s", err, out)
 	}
 	return nil
@@ -40,5 +48,17 @@ func (m *DarwinManager) IsUp() (bool, error) {
 		// wg show fails if no interfaces — that means not up.
 		return false, nil
 	}
-	return strings.Contains(string(out), "utun") || strings.Contains(string(out), "wg0"), nil
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func isAlreadyDownOutput(out string) bool {
+	s := strings.ToLower(out)
+	return strings.Contains(s, "is not a wireguard interface") ||
+		strings.Contains(s, "unable to access interface")
+}
+
+func isAlreadyUpOutput(out string) bool {
+	s := strings.ToLower(out)
+	return strings.Contains(s, "already exists") ||
+		strings.Contains(s, "exists as")
 }

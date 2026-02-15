@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -36,8 +37,8 @@ func (ks *PFKillSwitch) Enable(serverIP string, serverPort int) error {
 		os.Remove(ks.pfWasEnabledPath)
 	}
 
-	// Build kill switch rules.
-	// Allow: loopback, VPN server endpoint, WireGuard interface, block everything else.
+	ifaceRules := buildWGInterfaceRules()
+
 	rules := fmt.Sprintf(`# Cloak VPN Kill Switch
 # Block all IPv6 (prevents IPv6 leak outside tunnel)
 block drop quick inet6 all
@@ -45,16 +46,13 @@ block drop quick inet6 all
 pass quick on lo0 all
 # Allow traffic to VPN server (needed to maintain tunnel)
 pass out quick proto udp to %s port %d
-# Allow all traffic on WireGuard interfaces (utun*)
-pass quick on utun0 all
-pass quick on utun1 all
-pass quick on utun2 all
-pass quick on utun3 all
+# Allow all traffic on WireGuard interface
+%s
 # Block DNS outside tunnel (DNS leak protection)
 block drop quick proto {tcp, udp} to any port 53
 # Block everything else
 block drop all
-`, serverIP, serverPort)
+`, serverIP, serverPort, ifaceRules)
 
 	if err := os.WriteFile(ks.rulesPath, []byte(rules), 0600); err != nil {
 		return fmt.Errorf("writing pf rules: %w", err)
@@ -83,26 +81,38 @@ func (ks *PFKillSwitch) Disable() error {
 		return nil
 	}
 
+	// Use sudo -n (non-interactive) throughout. If credentials expired,
+	// we must fail loudly rather than hang or silently leave pf blocking traffic.
+	var restoreErr error
+
 	// Restore macOS default pf rules from /etc/pf.conf.
-	// This is the system-managed config with proper anchor definitions —
-	// much safer than trying to replay captured pfctl -sr output.
 	if _, err := os.Stat("/etc/pf.conf"); err == nil {
-		if out, err := exec.Command("sudo", "pfctl", "-f", "/etc/pf.conf").CombinedOutput(); err != nil {
-			// If restore fails, flush everything as a fallback.
-			exec.Command("sudo", "pfctl", "-F", "all").CombinedOutput()
-			fmt.Fprintf(os.Stderr, "Warning: restoring /etc/pf.conf failed: %s\n", out)
+		if out, err := exec.Command("sudo", "-n", "pfctl", "-f", "/etc/pf.conf").CombinedOutput(); err != nil {
+			// If restore fails, try flushing everything as a fallback.
+			if out2, err2 := exec.Command("sudo", "-n", "pfctl", "-F", "all").CombinedOutput(); err2 != nil {
+				restoreErr = fmt.Errorf("pf restore failed (sudo expired? run: sudo pfctl -d && sudo pfctl -f /etc/pf.conf)\nrestore: %s\nflush: %s", strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
+			}
 		}
 	} else {
-		exec.Command("sudo", "pfctl", "-F", "all").CombinedOutput()
+		if out, err := exec.Command("sudo", "-n", "pfctl", "-F", "all").CombinedOutput(); err != nil {
+			restoreErr = fmt.Errorf("pf flush failed (sudo expired? run: sudo pfctl -d): %s", strings.TrimSpace(string(out)))
+		}
 	}
 
 	// If pf was NOT enabled before we touched it, disable it again.
 	_, wasEnabled := os.Stat(ks.pfWasEnabledPath) // err == nil means file exists
 	if wasEnabled != nil {
-		exec.Command("sudo", "pfctl", "-d").CombinedOutput()
+		if out, err := exec.Command("sudo", "-n", "pfctl", "-d").CombinedOutput(); err != nil && restoreErr == nil {
+			restoreErr = fmt.Errorf("pf disable failed (sudo expired? run: sudo pfctl -d): %s", strings.TrimSpace(string(out)))
+		}
 	}
 
-	// Clean up our files.
+	// Only clean up state files after successful restore.
+	// If restore failed, keep files so a retry can still find them.
+	if restoreErr != nil {
+		return restoreErr
+	}
+
 	os.Remove(ks.rulesPath)
 	os.Remove(ks.backupPath)
 	os.Remove(ks.pfWasEnabledPath)
@@ -110,17 +120,76 @@ func (ks *PFKillSwitch) Disable() error {
 }
 
 func (ks *PFKillSwitch) IsEnabled() (bool, error) {
-	out, err := exec.Command("sudo", "pfctl", "-sr").CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("checking pf kill switch state: %w\n%s", err, out)
+	// We only consider Cloak kill switch active when:
+	// 1) pf is currently enabled, and
+	// 2) our generated rules file still exists.
+	//
+	// This avoids false positives from generic pf rules like "block drop all"
+	// that may exist outside Cloak.
+	if !pfIsEnabled() {
+		return false, nil
 	}
-	return strings.Contains(string(out), "Cloak VPN Kill Switch") ||
-		strings.Contains(string(out), "block drop all"), nil
+	if _, err := os.Stat(ks.rulesPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking pf kill switch state file: %w", err)
+	}
+	return true, nil
+}
+
+func buildWGInterfaceRules() string {
+	ifaces := detectWGInterfaces()
+	if len(ifaces) > 0 {
+		lines := make([]string, 0, len(ifaces))
+		for _, iface := range ifaces {
+			lines = append(lines, fmt.Sprintf("pass quick on %s all", iface))
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	// Fallback: allow a wide utun range if detection fails.
+	lines := make([]string, 0, 32)
+	for i := 0; i <= 31; i++ {
+		lines = append(lines, fmt.Sprintf("pass quick on utun%d all", i))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// detectWGInterfaces returns active WireGuard interface names (e.g. "utun4", "utun8").
+func detectWGInterfaces() []string {
+	out, err := exec.Command("sudo", "-n", "wg", "show", "interfaces").CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) == 0 {
+		return nil
+	}
+
+	set := make(map[string]struct{}, len(fields))
+	for _, iface := range fields {
+		iface = strings.TrimSpace(iface)
+		if iface == "" {
+			continue
+		}
+		set[iface] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+
+	result := make([]string, 0, len(set))
+	for iface := range set {
+		result = append(result, iface)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // pfIsEnabled checks whether pf is currently enabled.
 func pfIsEnabled() bool {
-	out, err := exec.Command("sudo", "pfctl", "-s", "info").CombinedOutput()
+	out, err := exec.Command("sudo", "-n", "pfctl", "-s", "info").CombinedOutput()
 	if err != nil {
 		return false
 	}

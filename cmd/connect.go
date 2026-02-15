@@ -45,15 +45,6 @@ var connectCmd = &cobra.Command{
 
 		mgr := tunnel.NewManager()
 
-		up, err := mgr.IsUp()
-		if err != nil {
-			return fmt.Errorf("checking tunnel status: %w", err)
-		}
-		if up {
-			fmt.Println("Already connected.")
-			return nil
-		}
-
 		fmt.Println("Connecting...")
 		if err := mgr.Up(confPath); err != nil {
 			return fmt.Errorf("bringing tunnel up: %w", err)

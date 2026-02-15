@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -94,6 +95,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionDoneMsg:
 		m.busy = false
 		m.err = msg.err
+		// After a successful connect, optimistically show Connected
+		// so the user doesn't see a stale "Disconnected" while the poll runs.
+		if msg.err == nil && m.busyMsg == "Connecting..." {
+			m.info.Connected = true
+		}
 		return m, pollStatus(m.cfg)
 
 	case spinner.TickMsg:
@@ -183,6 +189,10 @@ func (m Model) View() string {
 // pollStatus returns a command that gathers fresh status.
 func pollStatus(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
+		// Refresh sudo credentials to prevent expiry during TUI session.
+		// sudo -n -v extends the timestamp non-interactively if still cached.
+		exec.Command("sudo", "-n", "-v").Run()
+
 		var serverIP string
 		if cfg.Server != nil {
 			serverIP = cfg.Server.Host
@@ -219,11 +229,6 @@ func doConnect(cfg *config.Config) tea.Cmd {
 			return actionDoneMsg{err: err}
 		}
 		mgr := tunnel.NewManager()
-
-		// Check if already connected to avoid "already exists" errors from wg-quick.
-		if up, _ := mgr.IsUp(); up {
-			return actionDoneMsg{}
-		}
 
 		if err := mgr.Up(confPath); err != nil {
 			return actionDoneMsg{err: err}

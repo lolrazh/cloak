@@ -101,15 +101,16 @@ func (ks *IPTablesKillSwitch) Enable(serverIP string, serverPort int) error {
 }
 
 func (ks *IPTablesKillSwitch) Disable() error {
+	var firstErr error
+
 	if _, err := os.Stat(ks.backupPath); err == nil {
-		// Restore from full backup — this restores the exact pre-cloak state.
-		out, err := exec.Command("sudo", "iptables-restore", ks.backupPath).CombinedOutput()
+		out, err := exec.Command("sudo", "-n", "iptables-restore", ks.backupPath).CombinedOutput()
 		if err != nil {
-			// Fallback: remove our chain manually.
 			removeChain("iptables")
-			fmt.Fprintf(os.Stderr, "Warning: iptables-restore failed, removed CLOAK chain: %s\n", out)
+			firstErr = fmt.Errorf("iptables-restore failed (sudo expired? run: sudo iptables -F): %s", strings.TrimSpace(string(out)))
+		} else {
+			os.Remove(ks.backupPath)
 		}
-		os.Remove(ks.backupPath)
 	} else {
 		removeChain("iptables")
 	}
@@ -117,31 +118,34 @@ func (ks *IPTablesKillSwitch) Disable() error {
 	// Restore IPv6.
 	v6Backup := ks.backupPath + ".v6"
 	if _, err := os.Stat(v6Backup); err == nil {
-		out, err := exec.Command("sudo", "ip6tables-restore", v6Backup).CombinedOutput()
+		out, err := exec.Command("sudo", "-n", "ip6tables-restore", v6Backup).CombinedOutput()
 		if err != nil {
 			removeChain("ip6tables")
-			return fmt.Errorf("restoring ip6tables: %w\n%s", err, out)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("ip6tables-restore failed: %s", strings.TrimSpace(string(out)))
+			}
+		} else {
+			os.Remove(v6Backup)
 		}
-		os.Remove(v6Backup)
 	} else {
 		removeChain("ip6tables")
 	}
 
-	return nil
+	return firstErr
 }
 
 // removeChain removes the CLOAK chain from the given iptables command.
 func removeChain(ipt string) {
 	// Remove jump rules from INPUT/OUTPUT first.
-	exec.Command("sudo", ipt, "-D", "OUTPUT", "-j", chainName).CombinedOutput()
-	exec.Command("sudo", ipt, "-D", "INPUT", "-j", chainName).CombinedOutput()
+	exec.Command("sudo", "-n", ipt, "-D", "OUTPUT", "-j", chainName).CombinedOutput()
+	exec.Command("sudo", "-n", ipt, "-D", "INPUT", "-j", chainName).CombinedOutput()
 	// Flush and delete our chain.
-	exec.Command("sudo", ipt, "-F", chainName).CombinedOutput()
-	exec.Command("sudo", ipt, "-X", chainName).CombinedOutput()
+	exec.Command("sudo", "-n", ipt, "-F", chainName).CombinedOutput()
+	exec.Command("sudo", "-n", ipt, "-X", chainName).CombinedOutput()
 }
 
 func (ks *IPTablesKillSwitch) IsEnabled() (bool, error) {
-	out, err := exec.Command("sudo", "iptables", "-L", chainName).CombinedOutput()
+	out, err := exec.Command("sudo", "-n", "iptables", "-L", chainName).CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("checking iptables kill switch state: %w\n%s", err, out)
 	}
