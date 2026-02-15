@@ -20,14 +20,15 @@ const pollInterval = 2 * time.Second
 
 // Model is the Bubble Tea model for the dashboard.
 type Model struct {
-	info    status.Info
-	cfg     *config.Config
-	spinner spinner.Model
-	width   int
-	height  int
-	busy    bool // true while connecting/disconnecting
-	busyMsg string
-	err     error
+	info     status.Info
+	cfg      *config.Config
+	spinner  spinner.Model
+	width    int
+	height   int
+	busy     bool // true while connecting/disconnecting
+	busyMsg  string
+	err      error
+	quitting bool // true when user pressed q; waiting for cleanup before exit
 }
 
 // tickMsg triggers a status poll.
@@ -64,7 +65,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
-			return m, tea.Quit
+			// Clean up kill switch before quitting so user doesn't lose internet.
+			m.quitting = true
+			m.busy = true
+			m.busyMsg = "Shutting down..."
+			return m, doCleanQuit(m.cfg)
 		case "c":
 			if !m.busy && !m.info.Connected {
 				m.busy = true
@@ -95,10 +100,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionDoneMsg:
 		m.busy = false
 		m.err = msg.err
-		// After a successful connect, optimistically show Connected
-		// so the user doesn't see a stale "Disconnected" while the poll runs.
+		if m.quitting {
+			return m, tea.Quit
+		}
+		// Optimistically update state so user doesn't see stale info while poll runs.
 		if msg.err == nil && m.busyMsg == "Connecting..." {
 			m.info.Connected = true
+		}
+		if msg.err == nil && m.busyMsg == "Disconnecting..." {
+			m.info.Connected = false
 		}
 		return m, pollStatus(m.cfg)
 
@@ -223,14 +233,37 @@ func compactErr(err error) string {
 	return first
 }
 
+// checkSudo verifies sudo credentials are cached (non-interactive).
+// In the TUI, we cannot prompt for a password because Bubble Tea owns stdin.
+func checkSudo() error {
+	if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
+		return fmt.Errorf("sudo expired — quit and run: sudo -v")
+	}
+	return nil
+}
+
 // doConnect returns a command that brings the tunnel up.
 func doConnect(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
+		if err := checkSudo(); err != nil {
+			return actionDoneMsg{err: err}
+		}
+
 		confPath, err := config.WGConfPath()
 		if err != nil {
 			return actionDoneMsg{err: err}
 		}
 		mgr := tunnel.NewManager()
+
+		// Skip if tunnel is already up to avoid "already exists" errors.
+		if up, _ := mgr.IsUp(); up {
+			// Still enable kill switch in case it wasn't active.
+			if cfg.Server != nil {
+				ks := killswitch.New()
+				ks.Enable(cfg.Server.Host, cfg.Port)
+			}
+			return actionDoneMsg{}
+		}
 
 		if err := mgr.Up(confPath); err != nil {
 			return actionDoneMsg{err: err}
@@ -255,6 +288,10 @@ func doConnect(cfg *config.Config) tea.Cmd {
 // doDisconnect returns a command that tears down the tunnel.
 func doDisconnect(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
+		if err := checkSudo(); err != nil {
+			return actionDoneMsg{err: err}
+		}
+
 		var ksErr error
 		ks := killswitch.New()
 		if err := ks.Disable(); err != nil {
@@ -273,6 +310,18 @@ func doDisconnect(cfg *config.Config) tea.Cmd {
 		// Report kill switch error after tunnel is down — teardown still happened.
 		if ksErr != nil {
 			return actionDoneMsg{err: fmt.Errorf("disconnected but kill switch disable failed: %w", ksErr)}
+		}
+		return actionDoneMsg{}
+	}
+}
+
+// doCleanQuit disables the kill switch if active before exiting.
+func doCleanQuit(cfg *config.Config) tea.Cmd {
+	return func() tea.Msg {
+		ks := killswitch.New()
+		enabled, _ := ks.IsEnabled()
+		if enabled {
+			ks.Disable()
 		}
 		return actionDoneMsg{}
 	}

@@ -25,6 +25,7 @@ func TestRenderServer(t *testing.T) {
 		"ListenPort = 51820",
 		"PrivateKey = SERVER_PRIVATE_KEY",
 		"MASQUERADE",
+		"TCPMSS",
 		"eth0",
 		"PublicKey = CLIENT_PUBLIC_KEY",
 		"AllowedIPs = 10.0.0.2/32",
@@ -52,6 +53,7 @@ func TestRenderClient(t *testing.T) {
 
 	checks := []string{
 		"Address = 10.0.0.2/24",
+		"MTU = 1420",
 		"PrivateKey = CLIENT_PRIVATE_KEY",
 		"DNS = 1.1.1.1",
 		"PublicKey = SERVER_PUBLIC_KEY",

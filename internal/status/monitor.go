@@ -275,7 +275,14 @@ func parseBytes(s string) int64 {
 }
 
 func fetchExternalIP() string {
-	client := &http.Client{Timeout: 5 * time.Second}
+	// Force IPv4 dialer — the kill switch blocks all IPv6, so a dual-stack
+	// dial would stall waiting for the IPv6 attempt to timeout first.
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 4 * time.Second}).DialContext(ctx, "tcp4", addr)
+		},
+	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
 	resp, err := client.Get("https://api.ipify.org")
 	if err != nil {
 		return "unknown"
@@ -289,17 +296,45 @@ func fetchExternalIP() string {
 }
 
 func measureLatency(host string) time.Duration {
-	addr := host
-	if !strings.Contains(addr, ":") {
-		addr += ":443"
-	}
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	// Use ICMP ping via the system ping command.
+	// TCP-based probes fail because the server only listens on UDP.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "2", host).CombinedOutput()
 	if err != nil {
 		return 0
 	}
-	conn.Close()
-	return time.Since(start)
+	return parsePingRTT(string(out))
+}
+
+// parsePingRTT extracts the round-trip time from ping output.
+// macOS format: "round-trip min/avg/max/stddev = 1.234/1.234/1.234/0.000 ms"
+func parsePingRTT(output string) time.Duration {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "round-trip") && !strings.Contains(line, "rtt") {
+			continue
+		}
+		// Extract the avg value from "min/avg/max/stddev = X/Y/Z/W ms"
+		eqIdx := strings.Index(line, "=")
+		if eqIdx < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(line[eqIdx+1:])
+		parts := strings.Fields(rest)
+		if len(parts) < 1 {
+			continue
+		}
+		vals := strings.Split(parts[0], "/")
+		if len(vals) < 2 {
+			continue
+		}
+		avg, err := strconv.ParseFloat(vals[1], 64)
+		if err != nil {
+			continue
+		}
+		return time.Duration(avg * float64(time.Millisecond))
+	}
+	return 0
 }
 
 // FormatBytes converts bytes to a human-readable string.
