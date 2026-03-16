@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/lolrazh/cloak/internal/config"
-	"github.com/lolrazh/cloak/internal/killswitch"
 	"github.com/lolrazh/cloak/internal/status"
 	"github.com/spf13/cobra"
 )
@@ -18,24 +17,8 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("loading config (run `cloak init` first): %w", err)
 		}
 
-		var serverIP string
-		var serverPublicKey string
-		if cfg.Server != nil {
-			serverIP = cfg.Server.Host
-			serverPublicKey = cfg.Server.PublicKey
-		}
+		info := status.GatherAll(cfg)
 
-		info := status.Gather(serverIP, serverPublicKey)
-
-		// Check kill switch.
-		ks := killswitch.New()
-		enabled, ksErr := ks.IsEnabled()
-		info.KillSwitch = enabled
-		if ksErr != nil {
-			info.KillSwitchErr = ksErr.Error()
-		}
-
-		// Display.
 		if info.PermErr != "" {
 			fmt.Printf("Status:      Unknown (%s)\n", info.PermErr)
 		} else if info.StatusErr != "" {

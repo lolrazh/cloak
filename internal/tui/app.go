@@ -4,7 +4,6 @@ package tui
 import (
 	"fmt"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -181,34 +180,8 @@ func (m Model) View() string {
 func pollStatus(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		exec.Command("sudo", "-n", "-v").Run()
-
-		var serverIP, serverPublicKey string
-		if cfg.Server != nil {
-			serverIP = cfg.Server.Host
-			serverPublicKey = cfg.Server.PublicKey
-		}
-		info := status.Gather(serverIP, serverPublicKey)
-
-		ks := killswitch.New()
-		enabled, err := ks.IsEnabled()
-		info.KillSwitch = enabled
-		if err != nil {
-			info.KillSwitchErr = compactErr(err)
-		}
-
-		return statusMsg(info)
+		return statusMsg(status.GatherAll(cfg))
 	}
-}
-
-func compactErr(err error) string {
-	if err == nil {
-		return ""
-	}
-	first := strings.TrimSpace(strings.SplitN(err.Error(), "\n", 2)[0])
-	if first == "" {
-		return "unknown error"
-	}
-	return first
 }
 
 func checkSudo() error {

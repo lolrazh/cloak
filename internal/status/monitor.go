@@ -14,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lolrazh/cloak/internal/config"
+	"github.com/lolrazh/cloak/internal/killswitch"
 )
 
 // Info holds a snapshot of VPN connection status.
@@ -30,9 +33,26 @@ type Info struct {
 	StatusErr     string // Non-empty if status check failed for other reasons.
 }
 
-// Gather collects current VPN status information.
-// serverIP and serverPublicKey identify the expected Cloak peer.
-func Gather(serverIP, serverPublicKey string) Info {
+// GatherAll collects VPN status including kill switch state.
+func GatherAll(cfg *config.Config) Info {
+	var serverIP, serverPublicKey string
+	if cfg.Server != nil {
+		serverIP = cfg.Server.Host
+		serverPublicKey = cfg.Server.PublicKey
+	}
+	info := gather(serverIP, serverPublicKey)
+
+	ks := killswitch.New()
+	enabled, err := ks.IsEnabled()
+	info.KillSwitch = enabled
+	if err != nil {
+		info.KillSwitchErr = err.Error()
+	}
+
+	return info
+}
+
+func gather(serverIP, serverPublicKey string) Info {
 	info := Info{}
 
 	// Check if the configured Cloak peer is present in wg dump output.
@@ -126,13 +146,8 @@ func findMatchingPeerStats(dump, serverIP, serverPublicKey string) (peerStats, b
 }
 
 func matchesPeer(peerPublicKey, endpoint, serverIP, serverPublicKey string) bool {
-	if serverPublicKey != "" && peerPublicKey == serverPublicKey {
-		return true
-	}
-	if serverIP != "" && endpointMatchesHost(endpoint, serverIP) {
-		return true
-	}
-	return false
+	return (serverPublicKey != "" && peerPublicKey == serverPublicKey) ||
+		(serverIP != "" && endpointMatchesHost(endpoint, serverIP))
 }
 
 func endpointMatchesHost(endpoint, host string) bool {
