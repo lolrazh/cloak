@@ -1,14 +1,13 @@
-// Package vpn orchestrates tunnel + kill switch operations.
+// Package vpn manages the WireGuard tunnel, kill switch, and DNS.
 package vpn
 
 import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/lolrazh/cloak/internal/config"
-	"github.com/lolrazh/cloak/internal/killswitch"
-	"github.com/lolrazh/cloak/internal/tunnel"
 )
 
 // Connect brings the tunnel up and enables the kill switch.
@@ -16,74 +15,97 @@ import (
 func Connect(cfg *config.Config) error {
 	confPath, err := config.WGConfPath()
 	if err != nil {
-		return fmt.Errorf("WG config path: %w", err)
+		return err
 	}
 
-	mgr := tunnel.NewManager()
-
-	// Idempotent: if already up, just ensure kill switch is active.
-	if up, _ := mgr.IsUp(); up {
+	if isUp() {
 		if cfg.Server != nil {
-			ks := killswitch.New()
-			ks.Enable(cfg.Server.Host, cfg.Port)
+			enableKillSwitch(cfg.Server.Host, cfg.Port)
 		}
 		return nil
 	}
 
-	if err := mgr.Up(confPath); err != nil {
-		return fmt.Errorf("bringing tunnel up: %w", err)
+	if err := tunnelUp(confPath); err != nil {
+		return err
 	}
 
 	if cfg.Server != nil {
-		ks := killswitch.New()
-		if err := ks.Enable(cfg.Server.Host, cfg.Port); err != nil {
-			if downErr := mgr.Down(confPath); downErr != nil {
-				return fmt.Errorf("kill switch failed (%v) and rollback failed (%v)", err, downErr)
-			}
+		if err := enableKillSwitch(cfg.Server.Host, cfg.Port); err != nil {
+			tunnelDown(confPath)
 			return fmt.Errorf("kill switch failed, tunnel brought down: %w", err)
 		}
 	}
-
 	return nil
 }
 
 // Disconnect tears down the kill switch, tunnel, and restores DNS.
 func Disconnect() error {
-	ks := killswitch.New()
-	ksErr := ks.Disable()
+	ksErr := disableKillSwitch()
 
 	confPath, err := config.WGConfPath()
 	if err != nil {
-		return fmt.Errorf("WG config path: %w", err)
+		return err
 	}
-
-	mgr := tunnel.NewManager()
-	if err := mgr.Down(confPath); err != nil {
-		return fmt.Errorf("bringing tunnel down: %w", err)
+	if err := tunnelDown(confPath); err != nil {
+		return err
 	}
 
 	restoreDNS()
 
 	if ksErr != nil {
-		return fmt.Errorf("disconnected but kill switch disable failed: %w", ksErr)
+		return fmt.Errorf("disconnected but kill switch failed: %w", ksErr)
 	}
 	return nil
 }
 
-// Cleanup is a best-effort teardown for signal handlers.
-// It never returns errors — just tries to clean up whatever it can.
+// Cleanup is best-effort teardown for signal handlers.
 func Cleanup() {
-	ks := killswitch.New()
-	ks.Disable()
-
-	mgr := tunnel.NewManager()
-	if up, _ := mgr.IsUp(); up {
-		if confPath, err := config.WGConfPath(); err == nil {
-			mgr.Down(confPath)
+	disableKillSwitch()
+	if isUp() {
+		if p, err := config.WGConfPath(); err == nil {
+			tunnelDown(p)
 		}
 	}
-
 	restoreDNS()
+}
+
+// IsKillSwitchEnabled reports whether kill switch firewall rules are active.
+func IsKillSwitchEnabled() (bool, error) {
+	return isKillSwitchEnabled()
+}
+
+// --- tunnel helpers (wg-quick wrapper) ---
+
+func tunnelUp(confPath string) error {
+	out, err := exec.Command("sudo", "wg-quick", "up", confPath).CombinedOutput()
+	if err != nil {
+		s := strings.ToLower(string(out))
+		if strings.Contains(s, "already exists") || strings.Contains(s, "exists as") {
+			return nil
+		}
+		return fmt.Errorf("wg-quick up: %w\n%s", err, out)
+	}
+	return nil
+}
+
+func tunnelDown(confPath string) error {
+	out, err := exec.Command("sudo", "wg-quick", "down", confPath).CombinedOutput()
+	if err != nil {
+		s := strings.ToLower(string(out))
+		if strings.Contains(s, "is not a wireguard interface") || strings.Contains(s, "unable to access interface") {
+			return nil
+		}
+		return fmt.Errorf("wg-quick down: %w\n%s", err, out)
+	}
+	return nil
+}
+
+func isUp() bool {
+	out, err := exec.Command("sudo", "-n", "wg", "show", "interfaces").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
 }
 
 func restoreDNS() {

@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/lolrazh/cloak/internal/config"
-	"github.com/lolrazh/cloak/internal/killswitch"
+	"github.com/lolrazh/cloak/internal/vpn"
 )
 
 // Info holds a snapshot of VPN connection status.
@@ -42,8 +42,7 @@ func GatherAll(cfg *config.Config) Info {
 	}
 	info := gather(serverIP, serverPublicKey)
 
-	ks := killswitch.New()
-	enabled, err := ks.IsEnabled()
+	enabled, err := vpn.IsKillSwitchEnabled()
 	info.KillSwitch = enabled
 	if err != nil {
 		info.KillSwitchErr = err.Error()

@@ -10,7 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lolrazh/cloak/internal/config"
-	"github.com/lolrazh/cloak/internal/killswitch"
 	"github.com/lolrazh/cloak/internal/status"
 	"github.com/lolrazh/cloak/internal/vpn"
 )
@@ -211,10 +210,7 @@ func doDisconnect() tea.Cmd {
 
 func doCleanQuit() tea.Cmd {
 	return func() tea.Msg {
-		ks := killswitch.New()
-		if enabled, _ := ks.IsEnabled(); enabled {
-			ks.Disable()
-		}
+		vpn.Cleanup()
 		return actionDoneMsg{}
 	}
 }
