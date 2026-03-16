@@ -7,11 +7,8 @@ import (
 	"strings"
 
 	"github.com/lolrazh/cloak/internal/config"
-	"github.com/lolrazh/cloak/internal/wgconfig"
-	"github.com/lolrazh/cloak/internal/wgkeys"
 )
 
-// ProvisionResult contains the output of a successful server provisioning.
 type ProvisionResult struct {
 	ServerPublicKey string
 	ClientConfig    string
@@ -22,23 +19,20 @@ type step struct {
 	fn   func() error
 }
 
-// Provision sets up WireGuard on the remote server and returns
-// the server public key and a ready-to-use client config.
 func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 	serverCIDR, clientCIDR, clientIP, err := subnetDetails(cfg.Subnet)
 	if err != nil {
 		return nil, fmt.Errorf("invalid subnet %q: %w", cfg.Subnet, err)
 	}
 
-	var pkgMgr string
-	var defaultIface string
-	var serverKP wgkeys.KeyPair
+	var pkgMgr, defaultIface string
+	var serverKP config.KeyPair
 
 	steps := []step{
 		{"Detecting OS", func() error {
 			out, err := client.Run("cat /etc/os-release")
 			if err != nil {
-				return fmt.Errorf("reading os-release: %w", err)
+				return err
 			}
 			lower := strings.ToLower(out)
 			switch {
@@ -49,17 +43,16 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 				strings.Contains(lower, "alma"), strings.Contains(lower, "rocky"):
 				pkgMgr = "dnf"
 			default:
-				return fmt.Errorf("unsupported OS: %s", out)
+				return fmt.Errorf("unsupported OS")
 			}
-			fmt.Printf("  Detected package manager: %s\n", pkgMgr)
+			fmt.Printf("  Package manager: %s\n", pkgMgr)
 			return nil
 		}},
 		{"Installing WireGuard", func() error {
 			var cmd string
-			switch pkgMgr {
-			case "apt":
+			if pkgMgr == "apt" {
 				cmd = "DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y -qq wireguard-tools"
-			case "dnf":
+			} else {
 				cmd = "dnf install -y -q epel-release && dnf install -y -q wireguard-tools"
 			}
 			_, err := client.RunSudo(cmd)
@@ -79,33 +72,23 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 		{"Detecting default interface", func() error {
 			out, err := client.Run("ip route show default | awk '{print $5}' | head -1")
 			if err != nil {
-				return fmt.Errorf("detecting default interface: %w", err)
+				return err
 			}
 			defaultIface = strings.TrimSpace(out)
 			if defaultIface == "" {
 				return fmt.Errorf("could not detect default network interface")
 			}
-			fmt.Printf("  Default interface: %s\n", defaultIface)
+			fmt.Printf("  Interface: %s\n", defaultIface)
 			return nil
 		}},
 		{"Generating server keys", func() error {
-			var err error
-			serverKP, err = wgkeys.Generate()
+			serverKP, err = config.GenerateKeyPair()
 			return err
 		}},
 		{"Uploading server config", func() error {
-			serverConf, err := wgconfig.RenderServer(wgconfig.ServerData{
-				ServerAddress:    serverCIDR,
-				Port:             cfg.Port,
-				ServerPrivateKey: serverKP.Private.String(),
-				DefaultInterface: defaultIface,
-				ClientPublicKey:  cfg.PublicKey,
-				ClientAddress:    clientIP,
-			})
-			if err != nil {
-				return fmt.Errorf("rendering server config: %w", err)
-			}
-			return client.WriteFile("/etc/wireguard/wg0.conf", serverConf, "600")
+			conf := serverConf(serverCIDR, cfg.Port, config.KeyToBase64(serverKP.Private),
+				defaultIface, cfg.PublicKey, clientIP)
+			return client.WriteFile("/etc/wireguard/wg0.conf", conf, "600")
 		}},
 		{"Opening firewall port", func() error {
 			cmds := []string{
@@ -119,7 +102,7 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 				)
 			}
 			for _, cmd := range cmds {
-				client.RunSudo(cmd) // best-effort
+				client.RunSudo(cmd)
 			}
 			return nil
 		}},
@@ -139,62 +122,72 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 	for i, s := range steps {
 		fmt.Printf("[%d/%d] %s...\n", i+1, len(steps), s.name)
 		if err := s.fn(); err != nil {
-			return nil, fmt.Errorf("step %q failed: %w", s.name, err)
+			return nil, fmt.Errorf("%s: %w", s.name, err)
 		}
 	}
 
-	clientConf, err := wgconfig.RenderClient(wgconfig.ClientData{
-		ClientAddress:    clientCIDR,
-		ClientPrivateKey: cfg.PrivateKey,
-		ServerPublicKey:  serverKP.Public.String(),
-		ServerEndpoint:   cfg.Server.Host,
-		Port:             cfg.Port,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("rendering client config: %w", err)
-	}
-
+	serverPub := config.KeyToBase64(serverKP.Public)
 	return &ProvisionResult{
-		ServerPublicKey: serverKP.Public.String(),
-		ClientConfig:    clientConf,
+		ServerPublicKey: serverPub,
+		ClientConfig:    clientConf(clientCIDR, cfg.PrivateKey, serverPub, cfg.Server.Host, cfg.Port),
 	}, nil
 }
 
-// subnetDetails derives server/client addresses from a CIDR subnet.
-// e.g. "10.0.0.0/24" -> ("10.0.0.1/24", "10.0.0.2/24", "10.0.0.2", nil)
+func serverConf(addr string, port int, privKey, iface, clientPub, clientIP string) string {
+	return fmt.Sprintf(`[Interface]
+Address = %s
+ListenPort = %d
+PrivateKey = %s
+
+PostUp = iptables -A FORWARD -i %%i -j ACCEPT; iptables -A FORWARD -o %%i -j ACCEPT; iptables -t nat -A POSTROUTING -o %s -j MASQUERADE; iptables -t mangle -A FORWARD -i %%i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; iptables -t mangle -A FORWARD -o %%i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+PostDown = iptables -D FORWARD -i %%i -j ACCEPT; iptables -D FORWARD -o %%i -j ACCEPT; iptables -t nat -D POSTROUTING -o %s -j MASQUERADE; iptables -t mangle -D FORWARD -i %%i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; iptables -t mangle -D FORWARD -o %%i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+[Peer]
+PublicKey = %s
+AllowedIPs = %s/32
+`, addr, port, privKey, iface, iface, clientPub, clientIP)
+}
+
+func clientConf(addr, privKey, serverPub, endpoint string, port int) string {
+	return fmt.Sprintf(`[Interface]
+Address = %s
+MTU = 1420
+PrivateKey = %s
+DNS = 1.1.1.1, 1.0.0.1
+
+[Peer]
+PublicKey = %s
+Endpoint = %s:%d
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+`, addr, privKey, serverPub, endpoint, port)
+}
+
 func subnetDetails(subnet string) (serverCIDR, clientCIDR, clientIP string, err error) {
 	ip, ipNet, err := net.ParseCIDR(subnet)
 	if err != nil {
-		return "", "", "", fmt.Errorf("parsing subnet: %w", err)
+		return "", "", "", err
 	}
 	ip4 := ip.To4()
 	if ip4 == nil {
-		return "", "", "", fmt.Errorf("only IPv4 subnets supported, got %s", subnet)
+		return "", "", "", fmt.Errorf("only IPv4 supported")
 	}
-
 	ones, bits := ipNet.Mask.Size()
-	if bits != 32 {
-		return "", "", "", fmt.Errorf("only IPv4 subnets supported, got %s", subnet)
-	}
-	if ones > 30 {
-		return "", "", "", fmt.Errorf("subnet too small, need at least /30")
+	if bits != 32 || ones > 30 {
+		return "", "", "", fmt.Errorf("need IPv4 subnet /30 or larger")
 	}
 
 	base := binary.BigEndian.Uint32(ip4)
-	server := uint32ToIP(base + 1)
-	client := uint32ToIP(base + 2)
+	server := make(net.IP, 4)
+	client := make(net.IP, 4)
+	binary.BigEndian.PutUint32(server, base+1)
+	binary.BigEndian.PutUint32(client, base+2)
+
 	if !ipNet.Contains(server) || !ipNet.Contains(client) {
-		return "", "", "", fmt.Errorf("subnet %s does not have enough host addresses", subnet)
+		return "", "", "", fmt.Errorf("subnet too small")
 	}
 
-	serverCIDR = fmt.Sprintf("%s/%d", server.String(), ones)
-	clientCIDR = fmt.Sprintf("%s/%d", client.String(), ones)
-	clientIP = client.String()
-	return serverCIDR, clientCIDR, clientIP, nil
-}
-
-func uint32ToIP(v uint32) net.IP {
-	ip := make(net.IP, net.IPv4len)
-	binary.BigEndian.PutUint32(ip, v)
-	return ip
+	return fmt.Sprintf("%s/%d", server, ones),
+		fmt.Sprintf("%s/%d", client, ones),
+		client.String(), nil
 }

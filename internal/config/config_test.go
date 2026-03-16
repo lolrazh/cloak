@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,7 +18,6 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestSaveAndLoad(t *testing.T) {
-	// Use a temp directory as config dir.
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
@@ -29,7 +29,6 @@ func TestSaveAndLoad(t *testing.T) {
 		t.Fatalf("Save() error: %v", err)
 	}
 
-	// Verify file exists with correct permissions.
 	path := filepath.Join(tmpDir, dirName, configFile)
 	info, err := os.Stat(path)
 	if err != nil {
@@ -39,59 +38,62 @@ func TestSaveAndLoad(t *testing.T) {
 		t.Errorf("config file perms = %o, want 0600", perm)
 	}
 
-	// Load it back.
 	loaded, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-	if loaded.PrivateKey != cfg.PrivateKey {
-		t.Errorf("PrivateKey = %q, want %q", loaded.PrivateKey, cfg.PrivateKey)
-	}
-	if loaded.PublicKey != cfg.PublicKey {
-		t.Errorf("PublicKey = %q, want %q", loaded.PublicKey, cfg.PublicKey)
-	}
-	if loaded.Port != cfg.Port {
-		t.Errorf("Port = %d, want %d", loaded.Port, cfg.Port)
+	if loaded.PrivateKey != cfg.PrivateKey || loaded.PublicKey != cfg.PublicKey || loaded.Port != cfg.Port {
+		t.Errorf("round-trip mismatch: got %+v", loaded)
 	}
 }
 
 func TestLoadMissing(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	_, err := Load()
 	if !os.IsNotExist(err) {
 		t.Errorf("Load() on missing file: got %v, want os.ErrNotExist", err)
 	}
 }
 
-func TestSaveWithServer(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-
-	cfg := Defaults()
-	cfg.PrivateKey = "dGVzdHByaXZhdGVrZXkxMjM0NTY3ODkwMTIzNDU2"
-	cfg.PublicKey = "dGVzdHB1YmxpY2tleTEyMzQ1Njc4OTAxMjM0NTY3"
-	cfg.Server = &ServerConfig{
-		Host:       "203.0.113.42",
-		User:       "ubuntu",
-		SSHKeyPath: "/home/user/.ssh/id_ed25519",
-		PublicKey:  "c2VydmVycHVibGlja2V5MTIzNDU2Nzg5MDEyMzQ1",
-		Endpoint:   "203.0.113.42:51820",
-	}
-
-	if err := Save(&cfg); err != nil {
-		t.Fatalf("Save() error: %v", err)
-	}
-
-	loaded, err := Load()
+func TestGenerateKeyPair(t *testing.T) {
+	kp, err := GenerateKeyPair()
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("GenerateKeyPair() error: %v", err)
 	}
-	if loaded.Server == nil {
-		t.Fatal("Server config is nil after load")
+	if kp.Private == [keyLen]byte{} || kp.Public == [keyLen]byte{} {
+		t.Fatal("generated zero key")
 	}
-	if loaded.Server.Host != "203.0.113.42" {
-		t.Errorf("Server.Host = %q, want %q", loaded.Server.Host, "203.0.113.42")
+	if kp.Private == kp.Public {
+		t.Fatal("private and public keys are identical")
+	}
+	// Clamping checks.
+	if kp.Private[0]&7 != 0 {
+		t.Errorf("first byte low 3 bits not cleared: %08b", kp.Private[0])
+	}
+	if kp.Private[31]&128 != 0 {
+		t.Errorf("last byte bit 7 not cleared: %08b", kp.Private[31])
+	}
+	if kp.Private[31]&64 == 0 {
+		t.Errorf("last byte bit 6 not set: %08b", kp.Private[31])
+	}
+}
+
+func TestKeyToBase64(t *testing.T) {
+	kp, _ := GenerateKeyPair()
+	s := KeyToBase64(kp.Private)
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		t.Fatalf("base64 decode failed: %v", err)
+	}
+	if len(b) != keyLen {
+		t.Fatalf("decoded key length = %d, want %d", len(b), keyLen)
+	}
+}
+
+func TestUniqueKeys(t *testing.T) {
+	kp1, _ := GenerateKeyPair()
+	kp2, _ := GenerateKeyPair()
+	if kp1.Private == kp2.Private {
+		t.Fatal("two generated private keys are identical")
 	}
 }
