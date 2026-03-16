@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var serverDestroyCmd = &cobra.Command{
+var destroyCmd = &cobra.Command{
 	Use:   "destroy",
 	Short: "Remove WireGuard from the server",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -17,7 +17,7 @@ var serverDestroyCmd = &cobra.Command{
 			return fmt.Errorf("loading config: %w", err)
 		}
 		if cfg.Server == nil {
-			return fmt.Errorf("no server configured (run `cloak server setup` first)")
+			return fmt.Errorf("no server configured")
 		}
 
 		fmt.Printf("Connecting to %s@%s...\n", cfg.Server.User, cfg.Server.Host)
@@ -39,7 +39,6 @@ var serverDestroyCmd = &cobra.Command{
 			}
 		}
 
-		// Clear server config.
 		cfg.Server = nil
 		if err := config.Save(cfg); err != nil {
 			return fmt.Errorf("saving config: %w", err)
@@ -51,5 +50,5 @@ var serverDestroyCmd = &cobra.Command{
 }
 
 func init() {
-	serverCmd.AddCommand(serverDestroyCmd)
+	rootCmd.AddCommand(destroyCmd)
 }

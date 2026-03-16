@@ -8,10 +8,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var disconnectCmd = &cobra.Command{
-	Use:     "disconnect",
-	Aliases: []string{"off"},
-	Short:   "Disconnect from the VPN",
+var offCmd = &cobra.Command{
+	Use:   "off",
+	Short: "Disconnect from the VPN (headless)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
 			fmt.Println("Requesting sudo access...")
@@ -31,5 +30,5 @@ var disconnectCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(disconnectCmd)
+	rootCmd.AddCommand(offCmd)
 }
