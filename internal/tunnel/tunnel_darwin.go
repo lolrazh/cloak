@@ -51,14 +51,3 @@ func (m *DarwinManager) IsUp() (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func isAlreadyDownOutput(out string) bool {
-	s := strings.ToLower(out)
-	return strings.Contains(s, "is not a wireguard interface") ||
-		strings.Contains(s, "unable to access interface")
-}
-
-func isAlreadyUpOutput(out string) bool {
-	s := strings.ToLower(out)
-	return strings.Contains(s, "already exists") ||
-		strings.Contains(s, "exists as")
-}

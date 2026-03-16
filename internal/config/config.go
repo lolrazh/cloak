@@ -59,8 +59,7 @@ func Load() (*Config, error) {
 
 // Save writes the config to cloak.yaml with 0600 permissions.
 func Save(cfg *Config) error {
-	dir, err := EnsureDir()
-	if err != nil {
+	if _, err := EnsureDir(); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
 
@@ -74,9 +73,5 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("config path: %w", err)
 	}
 
-	_ = dir // used for EnsureDir side effect
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("writing config: %w", err)
-	}
-	return nil
+	return os.WriteFile(path, data, 0600)
 }

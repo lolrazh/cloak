@@ -2,15 +2,12 @@ package cmd
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
-	"strings"
-	"time"
 
 	"github.com/lolrazh/cloak/internal/config"
 	"github.com/lolrazh/cloak/internal/killswitch"
+	"github.com/lolrazh/cloak/internal/status"
 	"github.com/lolrazh/cloak/internal/tunnel"
 	"github.com/spf13/cobra"
 )
@@ -64,8 +61,8 @@ var connectCmd = &cobra.Command{
 		}
 
 		// Verify by checking external IP.
-		ip, err := getExternalIP()
-		if err != nil {
+		ip := status.FetchExternalIP()
+		if ip == "unknown" {
 			fmt.Println("Connected (could not verify external IP).")
 		} else {
 			fmt.Printf("Connected. External IP: %s\n", ip)
@@ -75,21 +72,6 @@ var connectCmd = &cobra.Command{
 	},
 }
 
-// getExternalIP fetches the public IP via api.ipify.org.
-func getExternalIP() (string, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://api.ipify.org")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(body)), nil
-}
 
 func init() {
 	connectCmd.Flags().BoolVar(&noKillswitch, "no-killswitch", false, "Disable kill switch")

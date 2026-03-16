@@ -68,7 +68,7 @@ func Gather(serverIP, serverPublicKey string) Info {
 	}
 
 	// Get external IP.
-	info.ExternalIP = fetchExternalIP()
+	info.ExternalIP = FetchExternalIP()
 
 	// Measure latency to server.
 	if serverIP != "" {
@@ -198,7 +198,8 @@ func isPermissionError(s string) bool {
 	return false
 }
 
-func fetchExternalIP() string {
+// FetchExternalIP returns the public IP via api.ipify.org, or "unknown" on failure.
+func FetchExternalIP() string {
 	// Force IPv4 dialer — the kill switch blocks all IPv6, so a dual-stack
 	// dial would stall waiting for the IPv6 attempt to timeout first.
 	transport := &http.Transport{
