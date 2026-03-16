@@ -17,40 +17,25 @@ type ProvisionResult struct {
 	ClientConfig    string
 }
 
-// Provision sets up WireGuard on the remote server.
-// Steps:
-//  1. Detect OS (apt vs dnf)
-//  2. Install wireguard-tools
-//  3. Enable IP forwarding
-//  4. Detect default network interface
-//  5. Generate server key pair
-//  6. Upload server WireGuard config
-//  7. Open firewall port
-//  8. Enable and start WireGuard
-//  9. Return client config
+type step struct {
+	name string
+	fn   func() error
+}
+
+// Provision sets up WireGuard on the remote server and returns
+// the server public key and a ready-to-use client config.
 func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
-	// Derive server/client addresses from configured subnet.
 	serverCIDR, clientCIDR, clientIP, err := subnetDetails(cfg.Subnet)
 	if err != nil {
 		return nil, fmt.Errorf("invalid subnet %q: %w", cfg.Subnet, err)
 	}
 
-	steps := []struct {
-		name string
-		fn   func() error
-	}{}
-
-	var pkgMgr string // "apt" or "dnf"
+	var pkgMgr string
 	var defaultIface string
 	var serverKP wgkeys.KeyPair
 
-	// 1. Detect package manager.
-	steps = append(steps, struct {
-		name string
-		fn   func() error
-	}{
-		name: "Detecting OS",
-		fn: func() error {
+	steps := []step{
+		{"Detecting OS", func() error {
 			out, err := client.Run("cat /etc/os-release")
 			if err != nil {
 				return fmt.Errorf("reading os-release: %w", err)
@@ -68,16 +53,8 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 			}
 			fmt.Printf("  Detected package manager: %s\n", pkgMgr)
 			return nil
-		},
-	})
-
-	// 2. Install WireGuard.
-	steps = append(steps, struct {
-		name string
-		fn   func() error
-	}{
-		name: "Installing WireGuard",
-		fn: func() error {
+		}},
+		{"Installing WireGuard", func() error {
 			var cmd string
 			switch pkgMgr {
 			case "apt":
@@ -87,36 +64,19 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 			}
 			_, err := client.RunSudo(cmd)
 			return err
-		},
-	})
-
-	// 3. Enable IP forwarding.
-	steps = append(steps, struct {
-		name string
-		fn   func() error
-	}{
-		name: "Enabling IP forwarding",
-		fn: func() error {
-			cmds := []string{
+		}},
+		{"Enabling IP forwarding", func() error {
+			for _, cmd := range []string{
 				"sysctl -w net.ipv4.ip_forward=1",
 				"sed -i '/^#*net.ipv4.ip_forward/c\\net.ipv4.ip_forward=1' /etc/sysctl.conf",
-			}
-			for _, cmd := range cmds {
+			} {
 				if _, err := client.RunSudo(cmd); err != nil {
 					return err
 				}
 			}
 			return nil
-		},
-	})
-
-	// 4. Detect default network interface.
-	steps = append(steps, struct {
-		name string
-		fn   func() error
-	}{
-		name: "Detecting default interface",
-		fn: func() error {
+		}},
+		{"Detecting default interface", func() error {
 			out, err := client.Run("ip route show default | awk '{print $5}' | head -1")
 			if err != nil {
 				return fmt.Errorf("detecting default interface: %w", err)
@@ -127,29 +87,13 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 			}
 			fmt.Printf("  Default interface: %s\n", defaultIface)
 			return nil
-		},
-	})
-
-	// 5. Generate server key pair.
-	steps = append(steps, struct {
-		name string
-		fn   func() error
-	}{
-		name: "Generating server keys",
-		fn: func() error {
+		}},
+		{"Generating server keys", func() error {
 			var err error
 			serverKP, err = wgkeys.Generate()
 			return err
-		},
-	})
-
-	// 6. Upload server WireGuard config.
-	steps = append(steps, struct {
-		name string
-		fn   func() error
-	}{
-		name: "Uploading server config",
-		fn: func() error {
+		}},
+		{"Uploading server config", func() error {
 			serverConf, err := wgconfig.RenderServer(wgconfig.ServerData{
 				ServerAddress:    serverCIDR,
 				Port:             cfg.Port,
@@ -161,27 +105,13 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 			if err != nil {
 				return fmt.Errorf("rendering server config: %w", err)
 			}
-
-			// Write config via stdin (clean, no shell escaping issues).
-			if err := client.WriteFile("/etc/wireguard/wg0.conf", serverConf, "600"); err != nil {
-				return fmt.Errorf("uploading config: %w", err)
-			}
-			return nil
-		},
-	})
-
-	// 7. Open firewall port.
-	steps = append(steps, struct {
-		name string
-		fn   func() error
-	}{
-		name: "Opening firewall port",
-		fn: func() error {
+			return client.WriteFile("/etc/wireguard/wg0.conf", serverConf, "600")
+		}},
+		{"Opening firewall port", func() error {
 			cmds := []string{
 				fmt.Sprintf("iptables -I INPUT -p udp --dport %d -j ACCEPT", cfg.Port),
 				"iptables-save > /etc/iptables/rules.v4 || true",
 			}
-			// Also try firewalld for Oracle Linux / CentOS.
 			if pkgMgr == "dnf" {
 				cmds = append(cmds,
 					fmt.Sprintf("firewall-cmd --add-port=%d/udp --permanent 2>/dev/null || true", cfg.Port),
@@ -189,42 +119,30 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 				)
 			}
 			for _, cmd := range cmds {
-				// Best-effort; some may fail if tools aren't installed.
-				client.RunSudo(cmd)
+				client.RunSudo(cmd) // best-effort
 			}
 			return nil
-		},
-	})
-
-	// 8. Enable and start WireGuard.
-	steps = append(steps, struct {
-		name string
-		fn   func() error
-	}{
-		name: "Starting WireGuard",
-		fn: func() error {
-			cmds := []string{
+		}},
+		{"Starting WireGuard", func() error {
+			for _, cmd := range []string{
 				"systemctl enable wg-quick@wg0",
 				"systemctl restart wg-quick@wg0",
-			}
-			for _, cmd := range cmds {
+			} {
 				if _, err := client.RunSudo(cmd); err != nil {
 					return err
 				}
 			}
 			return nil
-		},
-	})
+		}},
+	}
 
-	// Execute all steps.
-	for i, step := range steps {
-		fmt.Printf("[%d/%d] %s...\n", i+1, len(steps), step.name)
-		if err := step.fn(); err != nil {
-			return nil, fmt.Errorf("step %q failed: %w", step.name, err)
+	for i, s := range steps {
+		fmt.Printf("[%d/%d] %s...\n", i+1, len(steps), s.name)
+		if err := s.fn(); err != nil {
+			return nil, fmt.Errorf("step %q failed: %w", s.name, err)
 		}
 	}
 
-	// 9. Generate client config.
 	clientConf, err := wgconfig.RenderClient(wgconfig.ClientData{
 		ClientAddress:    clientCIDR,
 		ClientPrivateKey: cfg.PrivateKey,
@@ -245,7 +163,7 @@ func Provision(client *Client, cfg *config.Config) (*ProvisionResult, error) {
 // subnetDetails derives server/client addresses from a CIDR subnet.
 // e.g. "10.0.0.0/24" -> ("10.0.0.1/24", "10.0.0.2/24", "10.0.0.2", nil)
 func subnetDetails(subnet string) (serverCIDR, clientCIDR, clientIP string, err error) {
-	ip, _, err := net.ParseCIDR(subnet)
+	ip, ipNet, err := net.ParseCIDR(subnet)
 	if err != nil {
 		return "", "", "", fmt.Errorf("parsing subnet: %w", err)
 	}
@@ -254,7 +172,6 @@ func subnetDetails(subnet string) (serverCIDR, clientCIDR, clientIP string, err 
 		return "", "", "", fmt.Errorf("only IPv4 subnets supported, got %s", subnet)
 	}
 
-	_, ipNet, _ := net.ParseCIDR(subnet)
 	ones, bits := ipNet.Mask.Size()
 	if bits != 32 {
 		return "", "", "", fmt.Errorf("only IPv4 subnets supported, got %s", subnet)

@@ -156,25 +156,8 @@ func detectWGInterfaces() []string {
 	if len(fields) == 0 {
 		return nil
 	}
-
-	set := make(map[string]struct{}, len(fields))
-	for _, iface := range fields {
-		iface = strings.TrimSpace(iface)
-		if iface == "" {
-			continue
-		}
-		set[iface] = struct{}{}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-
-	result := make([]string, 0, len(set))
-	for iface := range set {
-		result = append(result, iface)
-	}
-	sort.Strings(result)
-	return result
+	sort.Strings(fields)
+	return fields
 }
 
 // pfIsEnabled checks whether pf is currently enabled.

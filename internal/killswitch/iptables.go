@@ -27,74 +27,64 @@ func New() KillSwitch {
 	}
 }
 
+// sudoRun runs an iptables/ip6tables command with sudo, returning combined output.
+func sudoRun(args ...string) ([]byte, error) {
+	return exec.Command("sudo", args...).CombinedOutput()
+}
+
 func (ks *IPTablesKillSwitch) Enable(serverIP string, serverPort int) error {
-	// Backup current iptables rules (full state, all chains).
-	out, err := exec.Command("sudo", "iptables-save").CombinedOutput()
+	// Backup current rules.
+	out, err := sudoRun("iptables-save")
 	if err != nil {
 		return fmt.Errorf("backing up iptables: %w", err)
 	}
 	if err := os.WriteFile(ks.backupPath, out, 0600); err != nil {
 		return fmt.Errorf("writing iptables backup: %w", err)
 	}
-
-	// Backup ip6tables too.
-	if out6, err := exec.Command("sudo", "ip6tables-save").CombinedOutput(); err == nil {
+	if out6, err := sudoRun("ip6tables-save"); err == nil {
 		if err := os.WriteFile(ks.backupPath+".v6", out6, 0600); err != nil {
 			return fmt.Errorf("writing ip6tables backup: %w", err)
 		}
 	}
 
-	// Create a dedicated chain so we don't touch existing rules.
-	cmds := [][]string{
-		// Create CLOAK chain (ignore error if it already exists).
-		{"iptables", "-N", chainName},
-		// Flush it in case of leftover rules.
-		{"iptables", "-F", chainName},
-		// Populate CLOAK chain rules.
-		{"iptables", "-A", chainName, "-i", "lo", "-j", "ACCEPT"},
-		{"iptables", "-A", chainName, "-o", "lo", "-j", "ACCEPT"},
-		{"iptables", "-A", chainName, "-d", serverIP, "-p", "udp", "--dport",
-			fmt.Sprintf("%d", serverPort), "-j", "ACCEPT"},
-		{"iptables", "-A", chainName, "-s", serverIP, "-p", "udp", "--sport",
-			fmt.Sprintf("%d", serverPort), "-j", "ACCEPT"},
-		{"iptables", "-A", chainName, "-i", "wg0", "-j", "ACCEPT"},
-		{"iptables", "-A", chainName, "-o", "wg0", "-j", "ACCEPT"},
-		// Block DNS outside tunnel.
-		{"iptables", "-A", chainName, "-p", "udp", "--dport", "53", "-j", "DROP"},
-		{"iptables", "-A", chainName, "-p", "tcp", "--dport", "53", "-j", "DROP"},
-		// Block everything else.
-		{"iptables", "-A", chainName, "-j", "DROP"},
-		// Jump to CLOAK from OUTPUT and INPUT at the top of the chain.
-		{"iptables", "-I", "OUTPUT", "1", "-j", chainName},
-		{"iptables", "-I", "INPUT", "1", "-j", chainName},
+	// Create/flush our chain (idempotent).
+	sudoRun("iptables", "-N", chainName)
+	sudoRun("iptables", "-F", chainName)
+
+	// IPv4 rules.
+	port := fmt.Sprintf("%d", serverPort)
+	rules := [][]string{
+		{"-A", chainName, "-i", "lo", "-j", "ACCEPT"},
+		{"-A", chainName, "-o", "lo", "-j", "ACCEPT"},
+		{"-A", chainName, "-d", serverIP, "-p", "udp", "--dport", port, "-j", "ACCEPT"},
+		{"-A", chainName, "-s", serverIP, "-p", "udp", "--sport", port, "-j", "ACCEPT"},
+		{"-A", chainName, "-i", "wg0", "-j", "ACCEPT"},
+		{"-A", chainName, "-o", "wg0", "-j", "ACCEPT"},
+		{"-A", chainName, "-p", "udp", "--dport", "53", "-j", "DROP"},
+		{"-A", chainName, "-p", "tcp", "--dport", "53", "-j", "DROP"},
+		{"-A", chainName, "-j", "DROP"},
+		{"-I", "OUTPUT", "1", "-j", chainName},
+		{"-I", "INPUT", "1", "-j", chainName},
 	}
-
-	// Create chain first (may already exist, that's fine).
-	exec.Command("sudo", "iptables", "-N", chainName).CombinedOutput()
-	exec.Command("sudo", "iptables", "-F", chainName).CombinedOutput()
-
-	// Skip the first two commands (create + flush, already done above).
-	for _, rule := range cmds[2:] {
-		args := append([]string{"sudo"}, rule...)
-		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("iptables rule %v: %w\n%s", rule, err, out)
+	for _, r := range rules {
+		args := append([]string{"iptables"}, r...)
+		if out, err := sudoRun(args...); err != nil {
+			return fmt.Errorf("iptables %v: %w\n%s", r, err, out)
 		}
 	}
 
-	// Block IPv6 entirely to prevent leaks.
-	exec.Command("sudo", "ip6tables", "-N", chainName).CombinedOutput()
-	exec.Command("sudo", "ip6tables", "-F", chainName).CombinedOutput()
-	ip6cmds := [][]string{
-		{"ip6tables", "-A", chainName, "-i", "lo", "-j", "ACCEPT"},
-		{"ip6tables", "-A", chainName, "-o", "lo", "-j", "ACCEPT"},
-		{"ip6tables", "-A", chainName, "-j", "DROP"},
-		{"ip6tables", "-I", "OUTPUT", "1", "-j", chainName},
-		{"ip6tables", "-I", "INPUT", "1", "-j", chainName},
-	}
-	for _, rule := range ip6cmds {
-		args := append([]string{"sudo"}, rule...)
-		exec.Command(args[0], args[1:]...).CombinedOutput()
+	// Block IPv6 entirely.
+	sudoRun("ip6tables", "-N", chainName)
+	sudoRun("ip6tables", "-F", chainName)
+	for _, r := range [][]string{
+		{"-A", chainName, "-i", "lo", "-j", "ACCEPT"},
+		{"-A", chainName, "-o", "lo", "-j", "ACCEPT"},
+		{"-A", chainName, "-j", "DROP"},
+		{"-I", "OUTPUT", "1", "-j", chainName},
+		{"-I", "INPUT", "1", "-j", chainName},
+	} {
+		args := append([]string{"ip6tables"}, r...)
+		sudoRun(args...)
 	}
 
 	return nil
@@ -104,7 +94,7 @@ func (ks *IPTablesKillSwitch) Disable() error {
 	var firstErr error
 
 	if _, err := os.Stat(ks.backupPath); err == nil {
-		out, err := exec.Command("sudo", "-n", "iptables-restore", ks.backupPath).CombinedOutput()
+		out, err := sudoRun("-n", "iptables-restore", ks.backupPath)
 		if err != nil {
 			removeChain("iptables")
 			firstErr = fmt.Errorf("iptables-restore failed (sudo expired? run: sudo iptables -F): %s", strings.TrimSpace(string(out)))
@@ -115,10 +105,9 @@ func (ks *IPTablesKillSwitch) Disable() error {
 		removeChain("iptables")
 	}
 
-	// Restore IPv6.
 	v6Backup := ks.backupPath + ".v6"
 	if _, err := os.Stat(v6Backup); err == nil {
-		out, err := exec.Command("sudo", "-n", "ip6tables-restore", v6Backup).CombinedOutput()
+		out, err := sudoRun("-n", "ip6tables-restore", v6Backup)
 		if err != nil {
 			removeChain("ip6tables")
 			if firstErr == nil {
@@ -134,21 +123,17 @@ func (ks *IPTablesKillSwitch) Disable() error {
 	return firstErr
 }
 
-// removeChain removes the CLOAK chain from the given iptables command.
 func removeChain(ipt string) {
-	// Remove jump rules from INPUT/OUTPUT first.
-	exec.Command("sudo", "-n", ipt, "-D", "OUTPUT", "-j", chainName).CombinedOutput()
-	exec.Command("sudo", "-n", ipt, "-D", "INPUT", "-j", chainName).CombinedOutput()
-	// Flush and delete our chain.
-	exec.Command("sudo", "-n", ipt, "-F", chainName).CombinedOutput()
-	exec.Command("sudo", "-n", ipt, "-X", chainName).CombinedOutput()
+	sudoRun("-n", ipt, "-D", "OUTPUT", "-j", chainName)
+	sudoRun("-n", ipt, "-D", "INPUT", "-j", chainName)
+	sudoRun("-n", ipt, "-F", chainName)
+	sudoRun("-n", ipt, "-X", chainName)
 }
 
 func (ks *IPTablesKillSwitch) IsEnabled() (bool, error) {
-	out, err := exec.Command("sudo", "-n", "iptables", "-L", chainName).CombinedOutput()
+	out, err := sudoRun("-n", "iptables", "-L", chainName)
 	if err != nil {
 		return false, fmt.Errorf("checking iptables kill switch state: %w\n%s", err, out)
 	}
-	// Chain exists and has rules — kill switch is active.
 	return strings.Contains(string(out), "DROP"), nil
 }
