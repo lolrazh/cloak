@@ -3,15 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"syscall"
 
 	"github.com/lolrazh/cloak/cmd"
-	"github.com/lolrazh/cloak/internal/config"
-	"github.com/lolrazh/cloak/internal/killswitch"
-	"github.com/lolrazh/cloak/internal/tunnel"
+	"github.com/lolrazh/cloak/internal/vpn"
 )
 
 func main() {
@@ -20,30 +16,10 @@ func main() {
 
 	go func() {
 		<-sigCh
-		cleanup()
+		fmt.Fprintln(os.Stderr, "\nCaught signal, cleaning up...")
+		vpn.Cleanup()
 		os.Exit(0)
 	}()
 
 	cmd.Execute()
-}
-
-func cleanup() {
-	ks := killswitch.New()
-	if err := ks.Disable(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: kill switch disable failed during cleanup: %v\n", err)
-	}
-
-	mgr := tunnel.NewManager()
-	if up, _ := mgr.IsUp(); up {
-		fmt.Fprintln(os.Stderr, "\nCaught signal, cleaning up...")
-		if confPath, err := config.WGConfPath(); err == nil {
-			mgr.Down(confPath)
-		}
-	}
-
-	if runtime.GOOS == "darwin" {
-		for _, iface := range []string{"Wi-Fi", "Ethernet"} {
-			exec.Command("networksetup", "-setdnsservers", iface, "Empty").CombinedOutput()
-		}
-	}
 }

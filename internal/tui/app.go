@@ -13,7 +13,7 @@ import (
 	"github.com/lolrazh/cloak/internal/config"
 	"github.com/lolrazh/cloak/internal/killswitch"
 	"github.com/lolrazh/cloak/internal/status"
-	"github.com/lolrazh/cloak/internal/tunnel"
+	"github.com/lolrazh/cloak/internal/vpn"
 )
 
 const pollInterval = 2 * time.Second
@@ -25,19 +25,14 @@ type Model struct {
 	spinner  spinner.Model
 	width    int
 	height   int
-	busy     bool // true while connecting/disconnecting
+	busy     bool
 	busyMsg  string
 	err      error
-	quitting bool // true when user pressed q; waiting for cleanup before exit
+	quitting bool
 }
 
-// tickMsg triggers a status poll.
 type tickMsg time.Time
-
-// statusMsg carries a fresh status snapshot.
 type statusMsg status.Info
-
-// actionDoneMsg signals a connect/disconnect finished.
 type actionDoneMsg struct{ err error }
 
 // NewModel creates the initial dashboard model.
@@ -65,11 +60,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
-			// Clean up kill switch before quitting so user doesn't lose internet.
 			m.quitting = true
 			m.busy = true
 			m.busyMsg = "Shutting down..."
-			return m, doCleanQuit(m.cfg)
+			return m, doCleanQuit()
 		case "c":
 			if !m.busy && !m.info.Connected {
 				m.busy = true
@@ -80,7 +74,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.busy && m.info.Connected {
 				m.busy = true
 				m.busyMsg = "Disconnecting..."
-				return m, doDisconnect(m.cfg)
+				return m, doDisconnect()
 			}
 		}
 
@@ -103,7 +97,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.quitting {
 			return m, tea.Quit
 		}
-		// Optimistically update state so user doesn't see stale info while poll runs.
 		if msg.err == nil && m.busyMsg == "Connecting..." {
 			m.info.Connected = true
 		}
@@ -122,12 +115,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	var content string
-
-	// Title.
 	title := titleStyle.Render("CLOAK VPN")
 
-	// Status line.
 	var statusLine string
 	if m.info.PermErr != "" {
 		statusLine = labelStyle.Render("Status:") + warnDot + " " + warnStyle.Render("Unknown ("+m.info.PermErr+")")
@@ -139,7 +128,6 @@ func (m Model) View() string {
 		statusLine = labelStyle.Render("Status:") + disconnectedDot + " " + valueStyle.Render("Disconnected")
 	}
 
-	// Details (only when connected).
 	var details string
 	if m.info.Connected {
 		ip := labelStyle.Render("Public IP:") + valueStyle.Render(m.info.ExternalIP)
@@ -156,7 +144,6 @@ func (m Model) View() string {
 		details = ip + "\n" + latency + "\n" + transfer
 	}
 
-	// Kill switch.
 	var ksLine string
 	if m.info.KillSwitchErr != "" {
 		ksLine = labelStyle.Render("Kill Switch:") + warnStyle.Render("● Error ("+m.info.KillSwitchErr+")")
@@ -166,23 +153,19 @@ func (m Model) View() string {
 		ksLine = labelStyle.Render("Kill Switch:") + inactiveStyle.Render("● Inactive")
 	}
 
-	// Busy indicator.
 	var busyLine string
 	if m.busy {
 		busyLine = "\n" + m.spinner.View() + " " + m.busyMsg
 	}
 
-	// Error.
 	var errLine string
 	if m.err != nil {
 		errLine = "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render(m.err.Error())
 	}
 
-	// Help.
 	help := helpStyle.Render("[c] Connect  [d] Disconnect  [q] Quit")
 
-	// Assemble.
-	content = title + "\n\n" + statusLine + "\n"
+	content := title + "\n\n" + statusLine + "\n"
 	if details != "" {
 		content += details + "\n"
 	}
@@ -190,21 +173,16 @@ func (m Model) View() string {
 
 	box := borderStyle.Render(content)
 
-	// Center in terminal.
 	return lipgloss.Place(m.width, m.height,
 		lipgloss.Center, lipgloss.Center,
 		box)
 }
 
-// pollStatus returns a command that gathers fresh status.
 func pollStatus(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
-		// Refresh sudo credentials to prevent expiry during TUI session.
-		// sudo -n -v extends the timestamp non-interactively if still cached.
 		exec.Command("sudo", "-n", "-v").Run()
 
-		var serverIP string
-		var serverPublicKey string
+		var serverIP, serverPublicKey string
 		if cfg.Server != nil {
 			serverIP = cfg.Server.Host
 			serverPublicKey = cfg.Server.PublicKey
@@ -233,8 +211,6 @@ func compactErr(err error) string {
 	return first
 }
 
-// checkSudo verifies sudo credentials are cached (non-interactive).
-// In the TUI, we cannot prompt for a password because Bubble Tea owns stdin.
 func checkSudo() error {
 	if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
 		return fmt.Errorf("sudo expired — quit and run: sudo -v")
@@ -242,85 +218,28 @@ func checkSudo() error {
 	return nil
 }
 
-// doConnect returns a command that brings the tunnel up.
 func doConnect(cfg *config.Config) tea.Cmd {
 	return func() tea.Msg {
 		if err := checkSudo(); err != nil {
 			return actionDoneMsg{err: err}
 		}
-
-		confPath, err := config.WGConfPath()
-		if err != nil {
-			return actionDoneMsg{err: err}
-		}
-		mgr := tunnel.NewManager()
-
-		// Skip if tunnel is already up to avoid "already exists" errors.
-		if up, _ := mgr.IsUp(); up {
-			// Still enable kill switch in case it wasn't active.
-			if cfg.Server != nil {
-				ks := killswitch.New()
-				ks.Enable(cfg.Server.Host, cfg.Port)
-			}
-			return actionDoneMsg{}
-		}
-
-		if err := mgr.Up(confPath); err != nil {
-			return actionDoneMsg{err: err}
-		}
-
-		// Enable kill switch.
-		if cfg.Server != nil {
-			ks := killswitch.New()
-			if err := ks.Enable(cfg.Server.Host, cfg.Port); err != nil {
-				// Fail closed: if kill switch fails, tear down tunnel to avoid leaks.
-				if downErr := mgr.Down(confPath); downErr != nil {
-					return actionDoneMsg{err: fmt.Errorf("kill switch failed (%v) and rollback failed (%v); tunnel may still be up", err, downErr)}
-				}
-				return actionDoneMsg{err: fmt.Errorf("kill switch failed, tunnel was brought down: %w", err)}
-			}
-		}
-
-		return actionDoneMsg{}
+		return actionDoneMsg{err: vpn.Connect(cfg)}
 	}
 }
 
-// doDisconnect returns a command that tears down the tunnel.
-func doDisconnect(cfg *config.Config) tea.Cmd {
+func doDisconnect() tea.Cmd {
 	return func() tea.Msg {
 		if err := checkSudo(); err != nil {
 			return actionDoneMsg{err: err}
 		}
-
-		var ksErr error
-		ks := killswitch.New()
-		if err := ks.Disable(); err != nil {
-			ksErr = err
-		}
-
-		confPath, err := config.WGConfPath()
-		if err != nil {
-			return actionDoneMsg{err: err}
-		}
-		mgr := tunnel.NewManager()
-		if err := mgr.Down(confPath); err != nil {
-			return actionDoneMsg{err: err}
-		}
-
-		// Report kill switch error after tunnel is down — teardown still happened.
-		if ksErr != nil {
-			return actionDoneMsg{err: fmt.Errorf("disconnected but kill switch disable failed: %w", ksErr)}
-		}
-		return actionDoneMsg{}
+		return actionDoneMsg{err: vpn.Disconnect()}
 	}
 }
 
-// doCleanQuit disables the kill switch if active before exiting.
-func doCleanQuit(cfg *config.Config) tea.Cmd {
+func doCleanQuit() tea.Cmd {
 	return func() tea.Msg {
 		ks := killswitch.New()
-		enabled, _ := ks.IsEnabled()
-		if enabled {
+		if enabled, _ := ks.IsEnabled(); enabled {
 			ks.Disable()
 		}
 		return actionDoneMsg{}
