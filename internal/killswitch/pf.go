@@ -9,20 +9,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/lolrazh/cloak/internal/config"
 )
 
 // PFKillSwitch implements KillSwitch using macOS's pf (Packet Filter).
 type PFKillSwitch struct {
-	backupPath       string // Path to backed-up pf rules.
-	rulesPath        string // Path to cloak's pf anchor rules.
-	pfWasEnabledPath string // Marker file: pf was already enabled before us.
-	anchorName       string // pf anchor where Cloak rules are loaded.
+	backupPath       string
+	rulesPath        string
+	pfWasEnabledPath string
+	anchorName       string
 }
 
 // New returns a platform-specific KillSwitch.
 func New() KillSwitch {
-	configDir, _ := os.UserHomeDir()
-	base := filepath.Join(configDir, ".config", "cloak")
+	base, _ := config.Dir()
 	return &PFKillSwitch{
 		backupPath:       filepath.Join(base, "pf-backup.conf"),
 		rulesPath:        filepath.Join(base, "pf-cloak.conf"),

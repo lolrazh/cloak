@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/lolrazh/cloak/internal/config"
 )
 
 // IPTablesKillSwitch implements KillSwitch using Linux iptables.
@@ -20,8 +22,7 @@ const chainName = "CLOAK"
 
 // New returns a platform-specific KillSwitch.
 func New() KillSwitch {
-	configDir, _ := os.UserHomeDir()
-	base := filepath.Join(configDir, ".config", "cloak")
+	base, _ := config.Dir()
 	return &IPTablesKillSwitch{
 		backupPath: filepath.Join(base, "iptables-backup.rules"),
 	}

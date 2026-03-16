@@ -2,8 +2,6 @@
 package ssh
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
@@ -11,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lolrazh/cloak/internal/config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -35,7 +34,7 @@ func Connect(host, user, keyPath string) (*Client, error) {
 		return nil, fmt.Errorf("parsing SSH key: %w", err)
 	}
 
-	config := &ssh.ClientConfig{
+	cfg := &ssh.ClientConfig{
 		User: user,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
@@ -49,7 +48,7 @@ func Connect(host, user, keyPath string) (*Client, error) {
 		addr += ":22"
 	}
 
-	conn, err := ssh.Dial("tcp", addr, config)
+	conn, err := ssh.Dial("tcp", addr, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("SSH dial %s: %w", addr, err)
 	}
@@ -77,7 +76,7 @@ func (c *Client) RunSudo(cmd string) (string, error) {
 	return c.Run("sudo " + cmd)
 }
 
-// WriteFile writes content to a remote file path via stdin (avoids shell escaping issues).
+// WriteFile writes content to a remote file path via stdin.
 func (c *Client) WriteFile(path, content string, mode string) error {
 	cmd := fmt.Sprintf("cat > %s && chmod %s %s", path, mode, path)
 	if c.user != "root" {
@@ -103,23 +102,19 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// knownHostsPath returns ~/.config/cloak/known_hosts.
 func knownHostsPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "cloak", "known_hosts")
+	dir, _ := config.Dir()
+	return filepath.Join(dir, "known_hosts")
 }
 
 // tofuHostKeyCallback implements Trust On First Use:
-// - First connection to a host: save its key fingerprint.
-// - Subsequent connections: verify the fingerprint matches.
+// first connection saves the fingerprint, subsequent connections verify it.
 func tofuHostKeyCallback(host string) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		fingerprint := ssh.FingerprintSHA256(key)
 		khPath := knownHostsPath()
 
-		// Load existing known hosts.
 		known := loadKnownHosts(khPath)
-		// Normalize host (strip port if present).
 		bareHost := host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			bareHost = h
@@ -135,18 +130,12 @@ func tofuHostKeyCallback(host string) ssh.HostKeyCallback {
 						"If the server was reprovisioned, remove the old entry from:\n  %s",
 					bareHost, saved, fingerprint, khPath)
 			}
-			return nil // Key matches.
+			return nil
 		}
 
-		// First connection — trust and save.
-		fp := sha256.Sum256(key.Marshal())
-		fmt.Printf("  Trusting new host key for %s: %s (%s)\n",
-			bareHost, fingerprint, base64.StdEncoding.EncodeToString(fp[:]))
+		fmt.Printf("  Trusting new host key for %s: %s\n", bareHost, fingerprint)
 		known[bareHost] = fingerprint
-		if err := saveKnownHosts(khPath, known); err != nil {
-			return fmt.Errorf("saving known host key: %w", err)
-		}
-		return nil
+		return saveKnownHosts(khPath, known)
 	}
 }
 
@@ -157,8 +146,7 @@ func loadKnownHosts(path string) map[string]string {
 		return known
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) == 2 {
+		if parts := strings.SplitN(line, " ", 2); len(parts) == 2 {
 			known[parts[0]] = parts[1]
 		}
 	}
@@ -166,15 +154,12 @@ func loadKnownHosts(path string) map[string]string {
 }
 
 func saveKnownHosts(path string, known map[string]string) error {
-	var lines []string
+	lines := make([]string, 0, len(known))
 	for host, fp := range known {
 		lines = append(lines, host+" "+fp)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
-		return err
-	}
-	return nil
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600)
 }
